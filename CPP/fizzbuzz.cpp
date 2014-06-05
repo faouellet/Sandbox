@@ -6,7 +6,7 @@ struct FizzBuzz
 	static void print()
 	{
 		std::cout << N << std::endl;
-		Fizzbuzz<N-1>::print();
+		FizzBuzz<N-1, (N-1)%3, (N-1)%5>::print();
 	}
 };
 
@@ -16,7 +16,7 @@ struct FizzBuzz<N, 0, 0>
 	static void print()
 	{
 		std::cout << "FizzBuzz" << std::endl;
-		Fizzbuzz<N-1>::print();
+		FizzBuzz<N-1, (N-1)%3, (N-1)%5>::print();
 	}
 };
 
@@ -26,7 +26,7 @@ struct FizzBuzz<N, Div3, 0>
 	static void print()
 	{
 		std::cout << "Buzz" << std::endl;
-		Fizzbuzz<N-1>::print();
+		FizzBuzz<N-1, (N-1)%3, (N-1)%5>::print();
 	}
 };
 
@@ -36,12 +36,12 @@ struct FizzBuzz<N, 0, Div5>
 	static void print()
 	{
 		std::cout << "Fizz" << std::endl;
-		Fizzbuzz<N-1>::print();
+		FizzBuzz<N-1, (N-1)%3, (N-1)%5>::print();
 	}
 };
 
-template<>
-struct FizzBuzz<0>
+template<size_t Div3, size_t Div5>
+struct FizzBuzz<0, Div3, Div5>
 {
 	static void print()
 	{
@@ -49,9 +49,26 @@ struct FizzBuzz<0>
 	}
 };
 
+template<>
+struct FizzBuzz<0, 0, 0>
+{
+	static void print()
+	{
+		std::cout << 0 << std::endl;
+	}
+};
+
+template<size_t N>
+struct RunFizzBuzz
+{
+    static void print()
+    {
+        FizzBuzz<N, N%3, N%5>::print();
+    }
+};
 
 int main()
 {
-	std::cout << "Fizzbuzz for 0 to 100" << std::endl;
-	RunFizzBuzz<100>; 
+	std::cout << "Fizzbuzz for 100" << std::endl;
+	RunFizzBuzz<100>::print(); 
 }
