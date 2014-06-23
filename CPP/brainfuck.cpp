@@ -1,3 +1,7 @@
+/*
+ * Interpreter for the brainfuck esoteric language
+ * */
+
 #include <fstream>
 #include <iostream>
 #include <string>

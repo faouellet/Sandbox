@@ -1,3 +1,7 @@
+/*
+ * Basic implementation of a threaded interpreter
+ * */
+
 #include <iostream>
 #include <vector>
 
