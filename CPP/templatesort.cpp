@@ -60,9 +60,47 @@ struct Concat<StaticIntList<>, StaticIntList<Tail...>>
 };
 ////////////////////////////////////////////////////////////////////////////////
 
+////////////////////////////////////////////////////////////////////////////////
+// Filter
+template<template<int> class, class> struct Filter;
+
+template<template<int> class Op, int Head, int... Tail>
+struct Filter<Op, StaticIntList<Head, Tail...>>
+{
+   using type = typename std::conditional<
+         Op<Head>::value,
+         typename Prepend<Head, typename Filter<Op, StaticIntList<Tail...>>::type>::type,
+         typename Filter<Op, StaticIntList<Tail...>>::type
+         >::type;
+};
+
+template<template<int> class Op, int... Vals>
+struct Filter<Op, StaticIntList<Vals...>>
+{
+    using type = StaticIntList<>;
+};
+////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////
+// Less Than
+template<int RHS> 
+struct LessThan
+{
+    template<int LHS>
+    struct Apply
+    {
+        static const bool value = LHS < RHS;
+    };
+};
+////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////
+// Sort
+template<class> struct Sort;
+////////////////////////////////////////////////////////////////////////////////
+
 int main()
 {
-    using SIL1 = StaticIntList<4,3,2,1>;
-    using SIL2 = StaticIntList<4,3,2,1>;
-    Printer<typename Concat<SIL1, SIL2>::type>::print();
+    using SIL = StaticIntList<4,3,2,1>;
+    Printer<Filter<LessThan<2>::Apply, SIL>::type>::print();
 }
