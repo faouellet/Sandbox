@@ -1,44 +1,28 @@
 #include <algorithm>
 #include <chrono>
+#include <fstream>
 #include <iostream>
 #include <random>
 
 const int DIM = 256;
 
-template <class T, int N> void generateZeroMatrix(T (&Mat)[N][N]) {
-  for (unsigned i = 0; i < N; ++i)
-    for (unsigned j = 0; j < N; ++j)
-      Mat[i][j] = T();
-}
-
-template <class T, int N> void generateRandomMatrix(T (&Mat)[N][N]) {
-  std::default_random_engine Engine;
-  std::uniform_real_distribution<T> Dist(0, 1000);
-
-  for (unsigned i = 0; i < N; ++i)
-    for (unsigned j = 0; j < N; ++j)
-      Mat[i][j] = Dist(Engine);
-}
-
-template <class T, int N>
-void normalMatMult(const T(&A)[N][N], const T(&B)[N][N], T(&C)[N][N]) {
+void normalMatMult(const double *A, const double *B, double *C, unsigned N) {
   for (unsigned i = 0; i < N; ++i)
     for (unsigned  j = 0; j < N; ++j)
       for (unsigned k = 0; k < N; ++k)
-        C[i][j] += A[i][k] * B[k][j];
+        C[i*N+j] += A[i*N+k] * B[k*N+j];
 }
 
-template <class T, int N>
-void transposeMatMult(const T(&A)[N][N], const T(&B)[N][N], T(&C)[N][N]) {
+void transposeMatMult(const double *A, const double *B, double *C, unsigned N) {
   for (unsigned i = 0; i < N; ++i)
     for (unsigned j = 0; j < N; ++j)
       for (unsigned k = 0; k < N; ++k)
-        C[i][j] += A[i][k] * B[j][k];
+        C[i*N+j] += A[i*N+k] * B[j*N+k];
 }
 
 void coMatMult(const double *A, const double *B, double *C, int m, int n,
                     int p, int fdA, int fdB, int fdC) {
-  if (m + n + p <= 64) { /* <= 16x16 matrices "on average" */
+  if (m + n + p <= 48) { 
     int i, j, k;
     for (i = 0; i < m; ++i)
       for (k = 0; k < p; ++k) {
@@ -47,7 +31,7 @@ void coMatMult(const double *A, const double *B, double *C, int m, int n,
           sum += A[i * fdA + j] * B[j * fdB + k];
         C[i * fdC + k] += sum;
       }
-  } else { /* divide and conquer */
+  } else { 
     int m2 = m / 2, n2 = n / 2, p2 = p / 2;
     coMatMult(A, B, C, m2, n2, p2, fdA, fdB, fdC);
     coMatMult(A + n2, B + n2 * fdB, C, m2, n - n2, p2, fdA, fdB, fdC);
@@ -66,54 +50,57 @@ void coMatMult(const double *A, const double *B, double *C, int m, int n,
 }
 
 int main() {
-  double A[DIM][DIM];
-  double B[DIM][DIM];
-  double C[DIM][DIM];
+  double *A = new double[DIM*DIM];
+  double *B = new double[DIM*DIM];
+  double *C = new double[DIM*DIM];
 
-  generateRandomMatrix(A);
-  generateRandomMatrix(B);
-  generateZeroMatrix(C);
+  std::default_random_engine Engine;
+  std::uniform_real_distribution<double> Dist(0, 1000);
+
+  for (unsigned i = 0; i < DIM * DIM; ++i) {
+    A[i] = Dist(Engine);
+    B[i] = Dist(Engine);
+    C[i] = 0.0;
+  }
+
   /////////////////////////////////////////////////////////////////////////////
   auto avant = std::chrono::high_resolution_clock::now();
-  { normalMatMult(A, B, C); }
+  { normalMatMult(A, B, C, DIM); }
   auto apres = std::chrono::high_resolution_clock::now();
   auto temps = apres - avant;
   std::cout << "Normal. Ecoule: "
             << std::chrono::duration_cast<std::chrono::microseconds>(temps)
                    .count() << " us." << std::endl;
   /////////////////////////////////////////////////////////////////////////////
-  generateZeroMatrix(C);
-  for (int i = 0; i < DIM; ++i)
-    for (int j = 0; j < DIM; ++j)
-      B[i][j] = B[j][i];
+  for (int i = 0; i < DIM; ++i) {
+    for (int j = 0; j < DIM; ++j) {
+      B[i * DIM + j] = B[j * DIM + i];
+      C[i * DIM + j] = 0.0;
+    }
+  }
   avant = std::chrono::high_resolution_clock::now();
-  { transposeMatMult(A, B, C); }
+  { transposeMatMult(A, B, C, DIM); }
   apres = std::chrono::high_resolution_clock::now();
   temps = apres - avant;
   std::cout << "Transpose. Ecoule: "
             << std::chrono::duration_cast<std::chrono::microseconds>(temps)
                    .count() << " us." << std::endl;
   /////////////////////////////////////////////////////////////////////////////
-  double *D = new double[DIM*DIM];
-  double *E = new double[DIM*DIM];
-  double *F = new double[DIM*DIM];
-
-  std::default_random_engine Engine;
-  std::uniform_real_distribution<double> Dist(0, 1000);
-
-  for (unsigned i = 0; i < DIM * DIM; ++i) {
-    D[i] = Dist(Engine);
-    E[i] = Dist(Engine);
-    F[i] = 0.0;
-  }
+  for (int i = 0; i < DIM; ++i) 
+    for (int j = 0; j < DIM; ++j)
+      C[i * DIM + j] = 0.0;
 
   avant = std::chrono::high_resolution_clock::now();
-  { coMatMult(D, E, F, DIM, DIM, DIM, DIM, DIM, DIM); }
+  { coMatMult(A, B, C, DIM, DIM, DIM, DIM, DIM, DIM); }
   apres = std::chrono::high_resolution_clock::now();
   temps = apres - avant;
   std::cout << "CO. Ecoule: "
             << std::chrono::duration_cast<std::chrono::microseconds>(temps)
                    .count() << " us." << std::endl;
+
+  delete[] A;
+  delete[] B;
+  delete[] C;
 
   return 0;
 }
