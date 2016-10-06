@@ -17,13 +17,9 @@ struct ShadowState
     bool IsWrite;
 };
 
-struct ThreadState
-{
-    ThreadClock Clock;
-};
 
 std::unordered_map<void*, ShadowState> MemoryState;
-std::unordered_map<TID, ThreadState> Threads;
+std::unordered_map<TID, ThreadClock> ThreadStates;
 
 // Assumes correct locking discipline. This is a race condition detector NOT a deadlock detector.
 class Mutex
@@ -33,24 +29,25 @@ public:
     {
         mMutex.lock();
         const TID thisTID = std::this_thread::get_id();
-        ThreadClock& accessorClock = Threads[thisTID].Clock;
+        ThreadClock& accessorClock = ThreadStates[thisTID];
 
         ++accessorClock[thisTID];
         
         // During a receive event, we synchronize the accessor clock with the mutex clock.
         // Afterwards, both will have the most up tot date vector clock possible.
-        for (auto& thTime : accessorClock)
+        mClock.insert(accessorClock.begin(), accessorClock.end());
+        for (auto& thTime : mClock)
         {
-            const size_t maxClockTime = std::max(mClock[thTime.first], thTime.second);
+            const size_t maxClockTime = std::max(accessorClock[thTime.first], thTime.second);
             thTime.second = maxClockTime;
-            mClock[thTime.first] = maxClockTime;
+            accessorClock[thTime.first] = maxClockTime;
         }
     }
 
     void Unlock()
     {
         const TID thisTID = std::this_thread::get_id();
-        ThreadClock& accessorClock = Threads[thisTID].Clock;
+        ThreadClock& accessorClock = ThreadStates[thisTID];
         
         // Update the accessor clock and mutex clock
         ++accessorClock[thisTID];
@@ -69,9 +66,9 @@ T Read(T&& val)
 {
     const TID currentTID = std::this_thread::get_id();
 
-    ++Threads[currentTID].Clock[currentTID];
+    ++ThreadStates[currentTID].Clock[currentTID];
 
-    ShadowState newState{ currentTID, Threads[thisTID].Clock[thisTID], false };
+    ShadowState newState{ currentTID, ThreadStates[thisTID].Clock[thisTID], false };
 
     CheckForConcurrentAccess(MemoryState[&val], newState);
     
@@ -85,9 +82,9 @@ void Write(T& oldVal, T&& newVal)
 {
     const TID currentTID = std::this_thread::get_id();
     
-    ++Threads[currentTID].Clock[currentTID];
+    ++ThreadStates[currentTID][currentTID];
 
-    ShadowState newState{ currentTID, Threads[currentTID].Clock[currentTID], true };
+    ShadowState newState{ currentTID, ThreadStates[currentTID][currentTID], true };
 
     CheckForConcurrentAccess(MemoryState[&oldVal], newState);
 
@@ -110,18 +107,23 @@ void CheckForConcurrentAccess(const ShadowState& oldState, const ShadowState& ne
         return;
     }
 
-    // A data race happens when not every element of the accessor's vector clock is less
+    // A data race happens when not every element of the current accessor's vector clock is less
     // than the corresponding element in the previous accessor's vector clock.
-    const ThreadClock& currentAccessorClock = Threads[newState.AccessorID].Clock;
-    ThreadClock& previousAccessorClock = Threads[oldState.AccessorID].Clock;
+    auto happensBefore = [](ThreadClock& firstEventClock, ThreadClock& secondEventClock) 
+    {
+        return std::all_of(firstEventClock.begin(), firstEventClock.end(), 
+                           [&secondEventClock](const std::pair<TID, size_t>& firstThreadTime) 
+                           { 
+                               return firstThreadTime.second <= secondEventClock[firstThreadTime.first];
+                           });
+    };
 
-    auto raceIt = std::find_if(currentAccessorClock.begin(), currentAccessorClock.end(), 
-                               [&previousAccessorClock](const std::pair<TID, size_t>& threadTime) 
-                               { 
-                                   return threadTime.second >= previousAccessorClock[threadTime.first];
-                               });
+    ThreadClock& currentAccessorClock = ThreadStates[newState.AccessorID];
+    ThreadClock& previousAccessorClock = ThreadStates[oldState.AccessorID];
 
-    if (raceIt != currentAccessorClock.end())
+    // Can we order the two accesses with a happens-before relation?
+    if (!happensBefore(currentAccessorClock, previousAccessorClock) 
+        && !happensBefore(previousAccessorClock, currentAccessorClock))
     {
         ConcurrentAccessCount.fetch_add(1);
     }
@@ -132,9 +134,16 @@ int main()
     int data = 0;
     std::vector<std::thread> threadVec;
 
+    Mutex mut;
+
     for (int i = 0; i < 3; ++i)
     {
-        threadVec.emplace_back([&i]() { Write(i, i + 1); });
+        threadVec.emplace_back([&data, &mut]() 
+                               { 
+                                   //mut.Lock();
+                                   Write(data, data + 1); 
+                                   //mut.Unlock();
+                               });
     }
 
     for (auto& th : threadVec)
