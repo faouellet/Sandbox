@@ -1,6 +1,7 @@
 #include <array>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 
 // Regex engine implement Parallel Failureless Aho-Corasick string searching algorithm
@@ -38,34 +39,66 @@ public:
         mDictionary.push_back(pattern);
     }
 
-    void Search(const std::string& str)
+    void SearchCPU(const std::string& str)
     {
-        int currentState = 0;
+        std::vector<std::thread> searchThreads;
+        const size_t nbThreads = std::thread::hardware_concurrency();
+        const size_t strSize = str.size();
 
-        for (size_t i = 0; i < str.size(); i++)
+        // We'll start as many threads as there are hardware threads
+        for (size_t iThread = 0; iThread < nbThreads; ++iThread)
         {
-            currentState = mTransitionMatrix[currentState][str[i] - 'a'];
-
-            // Nothing matched, shamefur dispray, commit sudoku
-            if (currentState == -1)
+            searchThreads.emplace_back([this, iThread, &nbThreads, &strSize, &str]() 
             {
-                return;
-            }
-
-            // Matched a character but not in a matching state, let's continue
-            if (mOutputTable[currentState] == 0)
-            {
-                continue;
-            }
-
-            for (size_t j = 0; j < mDictionary.size(); ++j)
-            {
-                if (mOutputTable[currentState] & (1 << j))
+                size_t currentStrIdx = iThread;
+                
+                while (currentStrIdx < strSize)
                 {
-                    std::cout << "Word " << mDictionary[j] << " appears from " << i - mDictionary[j].size() + 1 << " to " << i << std::endl;
+                    int currentState = 0;
+
+                    for (size_t i = currentStrIdx; i < strSize; ++i)
+                    {
+                        currentState = mTransitionMatrix[currentState][str[i] - 'a'];
+
+                        // Nothing matched, shamefur dispray, commit sudoku
+                        if (currentState == -1)
+                        {
+                            break;
+                        }
+
+                        // Matched a character but not in a matching state, let's continue
+                        if (mOutputTable[currentState] == 0)
+                        {
+                            continue;
+                        }
+
+                        for (size_t j = 0; j < mDictionary.size(); ++j)
+                        {
+                            if (mOutputTable[currentState] & (1 << j))
+                            {
+                                std::cout << "Word " << mDictionary[j] << " appears from " << i - mDictionary[j].size() + 1 << " to " << i << std::endl;
+                            }
+                        }
+                    }
+
+                    currentStrIdx += nbThreads;
                 }
+            });
+        }
+
+        // Cleanup
+        for (auto& th : searchThreads)
+        {
+            if (th.joinable())
+            {
+                th.join();
             }
         }
+    }
+
+    void SearchGPU(const std::string& str)
+    {
+
     }
 
 private:
@@ -92,5 +125,5 @@ int main()
     searcher.AddSearchPattern("his");
     searcher.AddSearchPattern("hers");
 
-    searcher.Search("ahishers");
+    searcher.SearchCPU("ahishers");
 }
