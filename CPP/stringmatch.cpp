@@ -1,5 +1,4 @@
 #include <iostream>
-#include <memory>
 #include <string>
 #include <vector>
 
@@ -10,18 +9,11 @@ private:
     {
         bool IsMatch;
         char Char;
-        std::vector<std::unique_ptr<TrieNode>> Children;
+        std::vector<size_t> ChildrenIdx;
     };
 
 public: // We can't copy it, but we can move it
-    Trie() : mRoot{ new TrieNode{ false, 'R', {} } } { }
-    ~Trie() = default;
-
-    Trie(const Trie& trie) = delete;
-    Trie& operator=(const Trie& trie) = delete;
-
-    Trie(Trie&& trie) { mRoot.reset(trie.mRoot.release()); }
-    Trie& operator=(Trie&& trie) { mRoot.reset(trie.mRoot.release()); }
+    Trie() : mNodes{ { false, 'R', {} } } { }
 
 public:
     void AddString(const std::string& str)
@@ -32,27 +24,22 @@ public:
         }
 
         mDictionary.push_back(str);
-        AddString(mRoot.get(), str);
+        AddString(0, str);
     }
 
-    bool Search(const std::string& str) const
+    std::pair<bool, size_t> Search(const std::string& str) const
     {
-        bool found = false;
-
-        for (const auto& child : mRoot->Children)
-        {
-            found |= Search(child.get(), str);
-        }
+        return Search(0, str);
     }
 
     template <typename StreamT>
     void Print(StreamT& stream) const
     {
-        Print(mRoot.get(), stream, 0);
+        Print(0, stream, 0);
     }
 
 private:
-    void AddString(TrieNode* const root, const std::string& str)
+    void AddString(size_t rootIdx, const std::string& str)
     {
         if (str.empty())
         {
@@ -60,46 +47,72 @@ private:
         }
 
         const char firstChar = str[0];
+        const auto& childrenIdx = mNodes[rootIdx].ChildrenIdx;
 
-        for (const auto& child : root->Children)
+        for (const auto& childIdx : childrenIdx)
         {
-            if (child->Char == firstChar)
+            if (mNodes[childIdx].Char == firstChar)
             {
-                AddString(child.get(), str.substr(1));
+                AddString(childIdx, str.substr(1));
                 return;
             }
         }
 
-        root->Children.emplace_back(new TrieNode{ str.size() == 1, firstChar, {} });
-        auto& newNode = root->Children.back();
+        mNodes.emplace_back(TrieNode{ str.size() == 1, firstChar, {} });
+        const size_t newNodeIdx = mNodes.size() - 1;
+        mNodes[rootIdx].ChildrenIdx.push_back(newNodeIdx);
 
-        AddString(newNode.get(), str.substr(1));
+        AddString(newNodeIdx, str.substr(1));
     }
 
-    bool Search(const TrieNode* const root, const std::string& str) const
+    std::pair<bool, size_t> Search(size_t rootIdx, const std::string& str) const
     {
+        if (str.empty())
+        {
+            return{ false, 0 };
+        }
+
+        const auto& childrenIdx = mNodes[rootIdx].ChildrenIdx;
+        for (const auto& childIdx : childrenIdx)
+        {
+            if (mNodes[childIdx].Char == str.front())
+            {
+                if (mNodes[childIdx].IsMatch)
+                {
+                    return{ true,childIdx };
+                }
+                else
+                {
+                    return Search(childIdx, str.substr(1));
+                }
+            }
+        }
+
+        return{ false, 0 };
     }
 
     template <typename StreamT>
-    void Print(const TrieNode* const root, StreamT& stream, size_t level) const
+    void Print(size_t rootIdx, StreamT& stream, size_t level) const
     {
+        const auto& node = mNodes[rootIdx];
+
         for (size_t iIndent = 0; iIndent < level; ++iIndent)
         {
             stream << " ";
         }
 
-        stream << root->Char << std::endl;
+        stream << node.Char << std::endl;
 
         ++level;
 
-        for (const auto& child : root->Children)
+        for (const auto& childIdx : node.ChildrenIdx)
         {
-            Print(child.get(), stream, level);
+            Print(childIdx, stream, level);
         }
     }
 
 private:
-    std::unique_ptr<TrieNode> mRoot;
+    std::vector<TrieNode> mNodes;
     std::vector<std::string> mDictionary;
 };
 
@@ -111,6 +124,8 @@ int main()
     t.AddString("she");
     t.AddString("his");
     t.AddString("hers");
+
+    auto foundIdx = t.Search("he hit her");
 
     t.Print(std::cout);
 }
