@@ -7,10 +7,11 @@
 #include <random>
 #include <regex>
 #include <string>
+#include <sstream>
 #include <thread>
 #include <vector>
 
-const int NB_ASCII_VALUES = 256;
+const int NB_ASCII_VALUES = 128;
 
 // Regex engine implement Parallel Failureless Aho-Corasick string searching algorithm
 class StringSearcher
@@ -19,8 +20,18 @@ public:
     StringSearcher(const std::string& pattern)
     {
         AddState();
-        std::vector<std::string> patternVec;
 
+        // Since we implement alternative ("|"), we split the pattern using "|" as a delimiter
+        std::stringstream stream{ pattern };
+        std::string temp;
+        std::vector<std::string> patternVec;
+        
+        while (getline(stream, temp, '|')) 
+        {
+            patternVec.push_back(temp);
+        }
+
+        // Each alternative pattern is then added to the regex engine
         for (const auto& pattern : patternVec)
         {
             AddSearchPattern(pattern);
@@ -117,13 +128,11 @@ private:
         int currentState = 0;
         for (const auto& chr : pattern)
         {
-            const int charIdx = chr - 'a';
-
-            if (mTransitionMatrix[currentState][charIdx] == -1)
+            if (mTransitionMatrix[currentState][chr] == -1)
             {
-                mTransitionMatrix[currentState][charIdx] = mTransitionMatrix.size();
+                mTransitionMatrix[currentState][chr] = mTransitionMatrix.size();
 
-                currentState = mTransitionMatrix[currentState][charIdx];
+                currentState = mTransitionMatrix[currentState][chr];
 
                 AddState();
             }
@@ -142,30 +151,26 @@ private:
 int main()
 {
     // Generate random string
-    std::default_random_engine engine(std::random_device{});
+    std::random_device device;
+    std::default_random_engine engine(device());
     std::uniform_int_distribution<> dist(0, NB_ASCII_VALUES);
     std::string dataStr(1000, 0);
     std::generate_n(dataStr.begin(), 1000, [&dist, &engine]() { return dist(engine); });
 
-    // TODO: Generate random pattern
-    const std::string pattern = "he|she|his|hers";
+    //const std::string pattern = "he|she|his|hers";
+    std::string pattern;
+    std::generate_n(std::back_inserter(pattern), 10, [&dist, &engine]() { return dist(engine); });
 
     StringSearcher searcher{ pattern };
     
     {
         auto start = std::chrono::high_resolution_clock::now();
-        searcher.SearchCPU("ahishers");
-        auto end = std::chrono::high_resolution_clock::now();
-        std::cout << "CPU PFAC: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
-    }
-    
-    {
-        auto start = std::chrono::high_resolution_clock::now();
-        searcher.SearchGPU("ahishers");
+        //searcher.SearchGPU("ahishers");
+        searcher.SearchGPU(dataStr);
         auto end = std::chrono::high_resolution_clock::now();
         std::cout << "GPU PFAC: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
     }
-    
+
     {
         std::smatch match;
         std::regex re{ pattern };
@@ -174,5 +179,13 @@ int main()
         std::regex_search(dataStr, match, re);
         auto end = std::chrono::high_resolution_clock::now();
         std::cout << "syd::regex: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
+    }
+
+    {
+        auto start = std::chrono::high_resolution_clock::now();
+        //searcher.SearchCPU("ahishers");
+        searcher.SearchCPU(dataStr);
+        auto end = std::chrono::high_resolution_clock::now();
+        std::cout << "CPU PFAC: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
     }
 }
