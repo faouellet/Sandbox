@@ -363,6 +363,36 @@ public:
   }
 };
 
+/// AwaitAST - Expression class for await
+class AwaitExprAST : public ExprAST
+{
+    std::unique_ptr<ExprAST> Call;
+public:
+  AwaitExprAST(SourceLocation Loc, std::unique_ptr<ExprAST> Call) 
+      : ExprAST(Loc), Call(std::move(Call)) {}
+  Value *codegen() override;
+  raw_ostream &dump(raw_ostream &out, int ind) override {
+    assert(Call != nullptr);
+    ExprAST::dump(out << "await ", ind);
+    Call->dump(indent(out, ind), ind + 1);
+  }
+};
+
+/// YieldAST - Expression class for yield
+class YieldExprAST : public ExprAST
+{
+    std::unique_ptr<ExprAST> Expr;
+public:
+  YieldExprAST(SourceLocation Loc, std::unique_ptr<ExprAST> Expr) 
+      : ExprAST(Loc), Expr(std::move(Expr)) {}
+  Value *codegen() override;
+  raw_ostream &dump(raw_ostream &out, int ind) override {
+    assert(Expr != nullptr);
+    ExprAST::dump(out << "yield ", ind);
+    Expr->dump(indent(out, ind), ind + 1);
+  }
+};
+
 /// PrototypeAST - This class represents the "prototype" for a function,
 /// which captures its name, and its argument names (thus implicitly the number
 /// of arguments the function takes), as well as if it is an operator.
@@ -636,6 +666,33 @@ static std::unique_ptr<ExprAST> ParseVarExpr() {
   return llvm::make_unique<VarExprAST>(std::move(VarNames), std::move(Body));
 }
 
+/// awaitexpr ::= 'await' callexpr
+static std::unique_ptr<ExprAST> ParseAwaitExpr() {
+  SourceLocation LitLoc = CurLoc;
+  getNextToken(); // eat the await
+
+  if (CurTok != tok_identifier)
+    return LogError("expected identifier after await");
+
+  auto CallExpr = ParseExpression();
+  if (!CallExpr)
+    return nullptr;
+
+  return llvm::make_unique<AwaitExprAST>(LitLoc, std::move(CallExpr));
+}
+
+/// yieldexpr ::= 'yield' expr
+static std::unique_ptr<ExprAST> ParseYieldExpr() {
+  SourceLocation LitLoc = CurLoc;
+  getNextToken(); // eat the yield
+
+  auto Expr = ParseExpression();
+  if (!Expr)
+    return nullptr;
+
+  return llvm::make_unique<YieldExprAST>(LitLoc, std::move(Expr));
+}
+
 /// primary
 ///   ::= identifierexpr
 ///   ::= numberexpr
@@ -643,6 +700,8 @@ static std::unique_ptr<ExprAST> ParseVarExpr() {
 ///   ::= ifexpr
 ///   ::= forexpr
 ///   ::= varexpr
+///   ::= awaitexpr
+///   ::= yieldexpr
 static std::unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
   default:
@@ -659,6 +718,10 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseForExpr();
   case tok_var:
     return ParseVarExpr();
+  case tok_await:
+    return ParseAwaitExpr();
+  case tok_yield:
+      ParseYieldExpr();
   }
 }
 
@@ -1213,6 +1276,14 @@ Value *VarExprAST::codegen() {
 
   // Return the body computation.
   return BodyVal;
+}
+
+Value *AwaitExprAST::codegen() {
+  return nullptr;
+}
+
+Value* YieldExprAST::codegen() {
+  return nullptr;
 }
 
 Function *PrototypeAST::codegen() {
