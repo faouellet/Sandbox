@@ -50,7 +50,7 @@ public:
         }
     }
 
-    std::vector<Match> SearchCPU(const std::string& str)
+    std::vector<Match> SearchMultithreadCPU(const std::string& str)
     {
         std::vector<std::thread> searchThreads;
         const size_t nbThreads = std::thread::hardware_concurrency();
@@ -112,37 +112,55 @@ public:
         return matches;
     }
 
-    std::vector<Match> SearchGPU(const std::string& str) const
+    std::vector<Match> SearchAMP(const std::string& str) const
     {
         const unsigned strSize = str.size();
-        concurrency::array_view<const int, 1> outputTableView(NB_ASCII_VALUES, mOutputTable.data());
+        concurrency::array_view<const int, 1> outputTableView(mOutputTable.size(), mOutputTable.data());
         
-        // C++AMP needs dense data. Since the transition table isn't dense, we have to flatten before
-        // moving it to the GPU
-        std::vector<int> flatTransitionTable(mTransitionMatrix.size() * NB_ASCII_VALUES);
+        // C++AMP needs dense data. Since the transition table isn't dense, we have to flatten it before moving it to the GPU
+        std::vector<int> flatTransitionTable;
+        flatTransitionTable.reserve(mTransitionMatrix.size() * NB_ASCII_VALUES);
         for (const auto& row : mTransitionMatrix)
         {
             flatTransitionTable.insert(flatTransitionTable.end(), row.begin(), row.end());
         }
         concurrency::array_view<const int, 2> transitionTableView(mTransitionMatrix.size(), NB_ASCII_VALUES, flatTransitionTable);
 
-        // TODO: Wasting a lot of space by converting a string to a vector of integers
-        std::vector<int> strIntVec(str.begin(), str.end());
-        concurrency::array_view<const int, 1> strArr(str.size(), strIntVec.data());
+        // To not waste any space, we'll pack the characters of the string argument into integers
+        std::vector<int> strIntVec;
+        strIntVec.reserve((strSize + 3) / 4);
+        for (size_t iStr = 0; iStr < strSize; iStr += 4)
+        {
+            int packedChars = 0;
+            packedChars = str[iStr];
+            packedChars <<= 8;
+            packedChars |= str[iStr+1];
+            packedChars <<= 8;
+            packedChars |= str[iStr+2];
+            packedChars <<= 8;
+            packedChars |= str[iStr+3];
+            strIntVec.push_back(packedChars);
+        }
+
+        concurrency::array_view<const int, 1> strView(strIntVec.size(), strIntVec.data());
         
         std::vector<int> results(strSize * mDictionary.size(), -1);
         concurrency::array_view<int, 2> resultsView(strSize, mDictionary.size(), results);
-        //resultsView.discard_data();
 
-        concurrency::parallel_for_each(strArr.extent, 
-                                       [transitionTableView, outputTableView, resultsView, strArr, strSize](concurrency::index<1> idx) restrict(amp)
+        concurrency::parallel_for_each(concurrency::extent<1>(strSize),
+                                       [transitionTableView, outputTableView, resultsView, strView, strSize](concurrency::index<1> idx) restrict(amp)
                                        {
                                            int currentStrIdx = idx[0];
                                            int currentState = 0;
+                                           int index = 0;
+                                           int currentChar = 0;
 
                                            for (unsigned iStr = currentStrIdx; iStr < strSize; ++iStr)
                                            {
-                                               currentState = transitionTableView[currentState][strArr[iStr]];
+                                               index = iStr / 4;
+                                               currentChar = strView[index] >> (8 * (iStr % 4 )) & 0xFF;
+
+                                               currentState = transitionTableView[currentState][currentChar];
 
                                                // Nothing matched, shamefur dispray, commit sudoku
                                                if (currentState == -1)
@@ -168,7 +186,7 @@ public:
                                        });
         resultsView.synchronize();
 
-        std::vector<Match> matches(results.size()/2);
+        std::vector<Match> matches;
         for (size_t iRes = 0; iRes < results.size(); iRes += 2)
         {
             const std::string& matchedPattern = mDictionary[iRes];
@@ -246,7 +264,7 @@ int main()
 
     {
         auto start = std::chrono::high_resolution_clock::now();
-        searcher.SearchCPU("ahishers");
+        searcher.SearchMultithreadCPU("ahishers");
         //searcher.SearchCPU(dataStr);
         auto end = std::chrono::high_resolution_clock::now();
         std::cout << "CPU PFAC: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
@@ -254,7 +272,7 @@ int main()
 
     {
         auto start = std::chrono::high_resolution_clock::now();
-        searcher.SearchGPU("ahishers");
+        searcher.SearchAMP("ahishers");
         //searcher.SearchGPU(dataStr);
         auto end = std::chrono::high_resolution_clock::now();
         std::cout << "GPU PFAC: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms\n";
