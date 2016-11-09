@@ -90,7 +90,7 @@ public:
                             if (mOutputTable[currentState] & (1 << iDict))
                             {
                                 const std::string& matchedPattern = mDictionary[iDict];
-                                matches.emplace_back(iStr - matchedPattern.size(), iStr - currentStrIdx, matchedPattern);
+                                matches.emplace_back(currentStrIdx, iStr - currentStrIdx, matchedPattern);
                             }
                         }
                     }
@@ -115,6 +115,7 @@ public:
     std::vector<Match> SearchAMP(const std::string& str) const
     {
         const unsigned strSize = str.size();
+        const unsigned dictSize = mDictionary.size();
         concurrency::array_view<const int, 1> outputTableView(mOutputTable.size(), mOutputTable.data());
         
         // C++AMP needs dense data. Since the transition table isn't dense, we have to flatten it before moving it to the GPU
@@ -144,21 +145,21 @@ public:
 
         concurrency::array_view<const int, 1> strView(strIntVec.size(), strIntVec.data());
         
-        std::vector<int> results(strSize * mDictionary.size(), -1);
-        concurrency::array_view<int, 2> resultsView(strSize, mDictionary.size(), results);
+        std::vector<int> results(strSize * dictSize, -1);
+        concurrency::array_view<int, 2> resultsView(strSize, dictSize, results);
 
         concurrency::parallel_for_each(concurrency::extent<1>(strSize),
                                        [transitionTableView, outputTableView, resultsView, strView, strSize](concurrency::index<1> idx) restrict(amp)
                                        {
-                                           int currentStrIdx = idx[0];
+                                           const int strStartIdx = idx[0];
                                            int currentState = 0;
                                            int index = 0;
                                            int currentChar = 0;
 
-                                           for (unsigned iStr = currentStrIdx; iStr < strSize; ++iStr)
+                                           for (unsigned iStr = strStartIdx; iStr < strSize; ++iStr)
                                            {
                                                index = iStr / 4;
-                                               currentChar = strView[index] >> (8 * (iStr % 4 )) & 0xFF;
+                                               currentChar = strView[index] >> (8 * (3-(iStr % 4))) & 0xFF;
 
                                                currentState = transitionTableView[currentState][currentChar];
 
@@ -179,7 +180,7 @@ public:
                                                {
                                                    if (outputTableView[currentState] & (1 << iDict))
                                                    {
-                                                       resultsView[currentStrIdx][iDict] = iStr - currentStrIdx;
+                                                       resultsView[strStartIdx][iDict] = iStr - strStartIdx;
                                                    }
                                                }
                                            }
@@ -187,10 +188,18 @@ public:
         resultsView.synchronize();
 
         std::vector<Match> matches;
-        for (size_t iRes = 0; iRes < results.size(); iRes += 2)
+        for (size_t iStr = 0; iStr < strSize; ++iStr)
         {
-            const std::string& matchedPattern = mDictionary[iRes];
-            matches.emplace_back(iRes+1,matchedPattern.size(), matchedPattern);
+            for (size_t iDict = 0; iDict < dictSize; ++iDict)
+            {
+                const int matchLength = results[(iStr * dictSize) + iDict];
+
+                if (matchLength > 0)
+                {
+                    const std::string& matchedPattern = mDictionary[iDict];
+                    matches.emplace_back(iStr + 1, matchLength, matchedPattern);
+                }
+            }
         }
 
         return matches;
@@ -213,6 +222,7 @@ private:
         }
 
         int currentState = 0;
+        int states = 1;
         for (const auto& chr : pattern)
         {
             if (mTransitionMatrix[currentState][chr] == -1)
