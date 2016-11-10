@@ -29,12 +29,12 @@ public:
     };
 
 public:
-    StringSearcher(const std::string& pattern)
+    StringSearcher(const std::string& patternStr)
     {
         AddState();
 
         // Since we implement alternative ("|"), we split the pattern using "|" as a delimiter
-        std::stringstream stream{ pattern };
+        std::stringstream stream{ patternStr };
         std::string temp;
         std::vector<std::string> patternVec;
         
@@ -90,7 +90,8 @@ public:
                             if (mOutputTable[currentState] & (1 << iDict))
                             {
                                 const std::string& matchedPattern = mDictionary[iDict];
-                                matches.emplace_back(currentStrIdx, iStr - currentStrIdx, matchedPattern);
+                                const size_t matchedLength = iStr - currentStrIdx + 1;
+                                matches.emplace_back(currentStrIdx, matchedLength, matchedPattern);
                             }
                         }
                     }
@@ -180,7 +181,7 @@ public:
                                                {
                                                    if (outputTableView[currentState] & (1 << iDict))
                                                    {
-                                                       resultsView[strStartIdx][iDict] = iStr - strStartIdx;
+                                                       resultsView[strStartIdx][iDict] = iStr - strStartIdx + 1;
                                                    }
                                                }
                                            }
@@ -197,7 +198,7 @@ public:
                 if (matchLength > 0)
                 {
                     const std::string& matchedPattern = mDictionary[iDict];
-                    matches.emplace_back(iStr + 1, matchLength, matchedPattern);
+                    matches.emplace_back(iStr, matchLength, matchedPattern);
                 }
             }
         }
@@ -222,17 +223,16 @@ private:
         }
 
         int currentState = 0;
-        int states = 1;
         for (const auto& chr : pattern)
         {
             if (mTransitionMatrix[currentState][chr] == -1)
             {
                 mTransitionMatrix[currentState][chr] = mTransitionMatrix.size();
 
-                currentState = mTransitionMatrix[currentState][chr];
-
                 AddState();
             }
+            
+            currentState = mTransitionMatrix[currentState][chr];
         }
 
         mOutputTable[currentState] |= (1 << mDictionary.size());
