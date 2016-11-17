@@ -186,14 +186,13 @@ public:
                                                }
                                            }
                                        });
-        resultsView.synchronize();
 
         std::vector<Match> matches;
         for (size_t iStr = 0; iStr < strSize; ++iStr)
         {
             for (size_t iDict = 0; iDict < dictSize; ++iDict)
             {
-                const int matchLength = results[(iStr * dictSize) + iDict];
+                const int matchLength = resultsView[iStr][iDict];
 
                 if (matchLength > 0)
                 {
