@@ -358,21 +358,6 @@ public:
   }
 };
 
-/// AwaitAST - Expression class for await
-class AwaitExprAST : public ExprAST
-{
-    std::unique_ptr<ExprAST> Call;
-public:
-  AwaitExprAST(SourceLocation Loc, std::unique_ptr<ExprAST> Call) 
-      : ExprAST(Loc), Call(std::move(Call)) {}
-  Value *codegen() override;
-  raw_ostream &dump(raw_ostream &out, int ind) override {
-    assert(Call != nullptr);
-    ExprAST::dump(out << "await ", ind);
-    Call->dump(indent(out, ind), ind + 1);
-  }
-};
-
 /// YieldAST - Expression class for yield
 class YieldExprAST : public ExprAST
 {
@@ -1253,10 +1238,6 @@ Value *VarExprAST::codegen() {
 
   // Return the body computation.
   return BodyVal;
-}
-
-Value *AwaitExprAST::codegen() {
-  return nullptr;
 }
 
 Value* YieldExprAST::codegen() {
