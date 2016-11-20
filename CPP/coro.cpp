@@ -51,7 +51,6 @@ enum Token {
   tok_var = -13,
 
   // coroutines
-  tok_await = -14,
   tok_yield = -15
 };
 
@@ -83,8 +82,6 @@ std::string getTokName(int Tok) {
     return "unary";
   case tok_var:
     return "var";
-  case tok_await:
-      return "await";
   case tok_yield:
       return "yield";
   }
@@ -162,8 +159,6 @@ static int gettok() {
       return tok_unary;
     if (IdentifierStr == "var")
       return tok_var;
-    if (IdentifierStr == "await")
-        return tok_await;
     if (IdentifierStr == "yield")
         return tok_yield;
     return tok_identifier;
@@ -666,21 +661,6 @@ static std::unique_ptr<ExprAST> ParseVarExpr() {
   return llvm::make_unique<VarExprAST>(std::move(VarNames), std::move(Body));
 }
 
-/// awaitexpr ::= 'await' callexpr
-static std::unique_ptr<ExprAST> ParseAwaitExpr() {
-  SourceLocation LitLoc = CurLoc;
-  getNextToken(); // eat the await
-
-  if (CurTok != tok_identifier)
-    return LogError("expected identifier after await");
-
-  auto CallExpr = ParseExpression();
-  if (!CallExpr)
-    return nullptr;
-
-  return llvm::make_unique<AwaitExprAST>(LitLoc, std::move(CallExpr));
-}
-
 /// yieldexpr ::= 'yield' expr
 static std::unique_ptr<ExprAST> ParseYieldExpr() {
   SourceLocation LitLoc = CurLoc;
@@ -700,7 +680,6 @@ static std::unique_ptr<ExprAST> ParseYieldExpr() {
 ///   ::= ifexpr
 ///   ::= forexpr
 ///   ::= varexpr
-///   ::= awaitexpr
 ///   ::= yieldexpr
 static std::unique_ptr<ExprAST> ParsePrimary() {
   switch (CurTok) {
@@ -718,8 +697,6 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     return ParseForExpr();
   case tok_var:
     return ParseVarExpr();
-  case tok_await:
-    return ParseAwaitExpr();
   case tok_yield:
       ParseYieldExpr();
   }
