@@ -7,7 +7,7 @@ set(LLVM_LINK_COMPONENTS
   )
 
 add_kaleidoscope_chapter(Kaleidoscope-Coro
-  toy.cpp
+  coro.cpp
   )
 
 export_executable_symbols(Kaleidoscope-Coro)
