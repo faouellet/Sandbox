@@ -370,6 +370,7 @@ public:
     assert(Expr != nullptr);
     ExprAST::dump(out << "yield ", ind);
     Expr->dump(indent(out, ind), ind + 1);
+    return out;
   }
 };
 
@@ -860,7 +861,7 @@ DIType *DebugInfo::getDoubleTy() {
   if (DblTy)
     return DblTy;
 
-  DblTy = DBuilder->createBasicType("double", 64, 64, dwarf::DW_ATE_float);
+  DblTy = DBuilder->createBasicType("double", 64, 64);
   return DblTy;
 }
 
@@ -1241,7 +1242,76 @@ Value *VarExprAST::codegen() {
 }
 
 Value* YieldExprAST::codegen() {
-  return nullptr;
+    // The first step to generating a coroutine is to allocate a coroutine frame. To do so, we'll create a
+    // new entry block in the function dedicated to this task.
+    // ----------------------------------------------------------------------------------------------------------------
+    // Getting the intrinsic functions we'll need
+    std::vector<Type*> coroIdFnTypes;
+    Function *coroIDFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_id, coroIdFnTypes);
+    std::vector<Type*> coroSizeFnTypes;
+    Function *coroSizeFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_size, coroSizeFnTypes);
+    std::vector<Type*> coroBeginFnTypes;
+    Function *coroBeginFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_begin, coroBeginFnTypes);
+
+    // Creating the coroutine creation block
+    Function *TheFunction = Builder.GetInsertBlock()->getParent();
+    BasicBlock& entryBlock = TheFunction->getEntryBlock();
+    BasicBlock *coroCreationBB = BasicBlock::Create(TheContext, "coro.creation", TheFunction, &entryBlock);
+
+    // Inserting the necessay intrinsic function calls into the coroutine creation block
+    Builder.SetInsertPoint(coroCreationBB);
+    Value *coroIdCall = Builder.CreateCall(coroIDFn, {});
+    Value *coroSizeCall = Builder.CreateCall(coroSizeFn, {});
+    Value *coroBeginCall = Builder.CreateCall(coroBeginFn, {});
+    // We then link the coroutine creation block to the previous entry block
+    Builder.CreateBr(&entryBlock);
+    // ----------------------------------------------------------------------------------------------------------------
+
+
+    // The next step after handling the creation of the coroutine frame is handling the return of the function. 
+    // In this case as well, a new basic block will be created to handle it.
+    // ----------------------------------------------------------------------------------------------------------------
+    // Getting the llvm.coro.end intrinsic function
+    std::vector<Type*> coroEndFnTypes;
+    Function *coroEndFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_id, coroEndFnTypes);
+        
+    // Creating the suspension or return block
+    BasicBlock *coroSuspensionBB = BasicBlock::Create(TheContext, "coro.suspend_or_ret", TheFunction);
+
+    // This block will simply return control back to the caller
+    Builder.SetInsertPoint(coroSuspensionBB);
+    Builder.CreateCall(coroEndFn, {});
+    Builder.CreateRet(coroBeginCall);
+    // ----------------------------------------------------------------------------------------------------------------
+    
+
+    // Lest we forget, we should cleanup before we return from a function using coroutine.
+    // ----------------------------------------------------------------------------------------------------------------
+    // Getting the llvm.coro.free intrinsic function
+    std::vector<Type*> coroFreeFnTypes;
+    Function *coroFreeFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_free, coroFreeFnTypes);
+    
+    // Creating the cleanup block
+    BasicBlock *coroCleanupBB = BasicBlock::Create(TheContext, "coro.cleanup", TheFunction);
+
+    // This block will delete the coroutine frame and branch to the suspend or return block
+    Builder.SetInsertPoint(coroCleanupBB);
+    Value *coroFreeCall = Builder.CreateCall(coroFreeFn, { coroIdCall, coroBeginCall });
+    Builder.createalloc(, { coroFreeCall });
+    Builder.CreateBr(coroSuspensionBB);
+    // ----------------------------------------------------------------------------------------------------------------
+
+
+    // Last but definitely not least, we should insert the coroutine in the function's logic
+    // ----------------------------------------------------------------------------------------------------------------
+    // Getting the llvm.coro.suspend intrinsic function
+    std::vector<Type*> coroSuspendFnTypes;
+    Function *coroSuspendFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_suspend, coroSuspendFnTypes);
+
+
+    // ----------------------------------------------------------------------------------------------------------------
+        
+    return nullptr;
 }
 
 Function *PrototypeAST::codegen() {
