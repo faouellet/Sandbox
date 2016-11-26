@@ -1273,13 +1273,12 @@ Value *YieldExprAST::codegen() {
     Value *coroId = Builder.CreateCall(coroIDFn, { zeroVal, null8PtrVal, null8PtrVal, null8PtrVal }, "id");
     Value *coroSizeCall = Builder.CreateCall(coroSizeFn, {}, "size");
 
-    // TODO: Review the malloc intrinsic call
     Type* IntPtrTy = IntegerType::getInt32Ty(TheContext);
     Type* Int8Ty = IntegerType::getInt8Ty(TheContext);
     Constant* allocsize = ConstantExpr::getSizeOf(Int8Ty);
     allocsize = ConstantExpr::getTruncOrBitCast(allocsize, IntPtrTy);
     Value *coroAlloc = CallInst::CreateMalloc(coroCreationBB, IntPtrTy, Int8Ty, allocsize, coroSizeCall, nullptr, "alloc");
-
+    coroCreationBB->getInstList().push_back(cast<Instruction>(coroAlloc));
     Value *coroHdl = Builder.CreateCall(coroBeginFn, { coroId, coroAlloc }, "hdl");
         
     // We then link the coroutine creation block to the previous entry block
@@ -1332,7 +1331,6 @@ Value *YieldExprAST::codegen() {
     SwitchInst *switchInst = Builder.CreateSwitch(coroSuspendCall, coroSuspensionBB, 2);
     switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 0)), originalEntryBB);
     switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 1)), coroCleanupBB);
-    TheModule->dump();
     // ----------------------------------------------------------------------------------------------------------------
         
 
