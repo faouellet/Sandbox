@@ -1,0 +1,7 @@
+extern putchard(char);
+
+def hello()
+  yield 72;		# ascii 72  = 'H'
+
+for i = 0, i < 5, 1.0 in
+  putchard(hello())
