@@ -103,6 +103,16 @@ struct DebugInfo {
   DIType *getDoubleTy();
 } KSDbgInfo;
 
+struct CoroutineFrameInfo {
+    Value *suspensionPt;
+    BasicBlock *suspensionBB;
+    BasicBlock *cleanupBB;
+
+    CoroutineFrameInfo() = delete;
+    CoroutineFrameInfo(Value *suspendPt, BasicBlock *suspendBB, BasicBlock *cleanBB) 
+        : suspensionPt{ suspendPt }, suspensionBB{ suspendBB }, cleanupBB{ cleanBB } { }
+};
+
 struct SourceLocation {
   int Line;
   int Col;
@@ -362,6 +372,8 @@ public:
 class YieldExprAST : public ExprAST
 {
     std::unique_ptr<ExprAST> Expr;
+
+    const CoroutineFrameInfo& getOrCreateCoroutineFrame(Function *F);
 public:
   YieldExprAST(SourceLocation Loc, std::unique_ptr<ExprAST> Expr) 
       : ExprAST(Loc), Expr(std::move(Expr)) {}
@@ -898,6 +910,7 @@ static std::unique_ptr<Module> TheModule;
 static std::map<std::string, AllocaInst *> NamedValues;
 static std::unique_ptr<KaleidoscopeJIT> TheJIT;
 static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
+static std::map<Function *, CoroutineFrameInfo> FunctionCoros;
 
 Value *LogErrorV(const char *Str) {
   LogError(Str);
@@ -1242,100 +1255,119 @@ Value *VarExprAST::codegen() {
 }
 
 Value *YieldExprAST::codegen() {
-    // We'll keep the current insert point in memory because we're about to make a long detour
-    BasicBlock *originalEntryBB = Builder.GetInsertBlock();
+  const CoroutineFrameInfo& coroInfo = getOrCreateCoroutineFrame(Builder.GetInsertBlock()->getParent());
+  
+  // At this point, one of three things can happen:
+  // 1 - The coroutine is suspended and we hand back the control to the caller
+  // 2 - The coroutine is resumed and we jump to the resume basic block
+  // 3 - The coroutine is destroyed and we go clean up its coroutine frame
+  BasicBlock *resumeBB = BasicBlock::Create(TheContext, "coro.resume");
+  
+  SwitchInst *switchInst = Builder.CreateSwitch(coroInfo.suspensionPt, coroInfo.suspensionBB, 2);
+  switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 0)), resumeBB);
+  switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 1)), coroInfo.cleanupBB);
 
-    // Some types we'll be using when getting the coroutine intrinsic function declarations
-    PointerType *int8PtrTy = Type::getInt8PtrTy(TheContext);
-    Type *int32Ty = Type::getInt32Ty(TheContext);
-    Type *boolTy = Type::getInt1Ty(TheContext);
+  // TODO: What to return?
+  return Constant::getNullValue(Type::getDoubleTy(TheContext));
+}
 
-    // And some values we'll be using when calling these intrinsics
-    Value *null8PtrVal = ConstantPointerNull::get(int8PtrTy);
-    Value *zeroVal = ConstantInt::get(int32Ty, APInt(32, 0));
-    Value *falseVal = ConstantInt::get(boolTy, APInt(1, 0));
+const CoroutineFrameInfo& YieldExprAST::getOrCreateCoroutineFrame(Function *F) {
+  // First, let's make sure that work hasn't already been done for this function
+  auto fnCoro = FunctionCoros.find(F);
+  if (fnCoro != FunctionCoros.end())
+      return fnCoro->second;
 
-    // The first step to generating a coroutine is to allocate a coroutine frame. To do so, we'll create a
-    // new entry block in the function dedicated to this task.
-    // ----------------------------------------------------------------------------------------------------------------
-    // Getting the intrinsic functions we'll need
-    Function *coroIDFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_id);
-    Function *coroSizeFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_size, { Type::getInt64Ty(TheContext) });
-    Function *coroBeginFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_begin);
+  // We'll keep the current insert point in memory because we're about to make a long detour
+  BasicBlock *originalEntryBB = Builder.GetInsertBlock();
 
-    // Creating the coroutine creation block
-    Function *TheFunction = Builder.GetInsertBlock()->getParent();
-    BasicBlock &entryBlock = TheFunction->getEntryBlock();
-    BasicBlock *coroCreationBB = BasicBlock::Create(TheContext, "coro.creation", TheFunction, &entryBlock);
+  // Some types we'll be using when getting the coroutine intrinsic function declarations
+  PointerType *int8PtrTy = Type::getInt8PtrTy(TheContext);
+  Type *int32Ty = Type::getInt32Ty(TheContext);
+  Type *boolTy = Type::getInt1Ty(TheContext);
 
-    // Inserting the necessay intrinsic function calls into the coroutine creation block
-    Builder.SetInsertPoint(coroCreationBB);
-    Value *coroId = Builder.CreateCall(coroIDFn, { zeroVal, null8PtrVal, null8PtrVal, null8PtrVal }, "id");
-    Value *coroSizeCall = Builder.CreateCall(coroSizeFn, {}, "size");
+  // And some values we'll be using when calling these intrinsics
+  Value *null8PtrVal = ConstantPointerNull::get(int8PtrTy);
+  Value *zeroVal = ConstantInt::get(int32Ty, APInt(32, 0));
+  Value *falseVal = ConstantInt::get(boolTy, APInt(1, 0));
 
-    Type* IntPtrTy = IntegerType::getInt32Ty(TheContext);
-    Type* Int8Ty = IntegerType::getInt8Ty(TheContext);
-    Constant* allocsize = ConstantExpr::getSizeOf(Int8Ty);
-    allocsize = ConstantExpr::getTruncOrBitCast(allocsize, IntPtrTy);
-    Value *coroAlloc = CallInst::CreateMalloc(coroCreationBB, IntPtrTy, Int8Ty, allocsize, coroSizeCall, nullptr, "alloc");
-    coroCreationBB->getInstList().push_back(cast<Instruction>(coroAlloc));
-    Value *coroHdl = Builder.CreateCall(coroBeginFn, { coroId, coroAlloc }, "hdl");
-        
-    // We then link the coroutine creation block to the previous entry block
-    Builder.CreateBr(&entryBlock);
-    // ----------------------------------------------------------------------------------------------------------------
+  // The first step to generating a coroutine is to allocate a coroutine frame. To do so, we'll create a
+  // new entry block in the function dedicated to this task.
+  // ----------------------------------------------------------------------------------------------------------------
+  // Getting the intrinsic functions we'll need
+  Function *coroIDFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_id);
+  Function *coroSizeFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_size, { Type::getInt64Ty(TheContext) });
+  Function *coroBeginFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_begin);
 
+  // Creating the coroutine creation block
+  Function *TheFunction = Builder.GetInsertBlock()->getParent();
+  BasicBlock &entryBlock = TheFunction->getEntryBlock();
+  BasicBlock *coroCreationBB = BasicBlock::Create(TheContext, "coro.creation", TheFunction, &entryBlock);
 
-    // The next step after handling the creation of the coroutine frame is handling the return of the function. 
-    // In this case as well, a new basic block will be created to handle it.
-    // ----------------------------------------------------------------------------------------------------------------
-    // Getting the llvm.coro.end intrinsic function
-    Function *coroEndFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_end);
-        
-    // Creating the suspension or return block
-    BasicBlock *coroSuspensionBB = BasicBlock::Create(TheContext, "coro.suspend_or_ret", TheFunction);
-    
-    // This block will simply return control back to the caller
-    Builder.SetInsertPoint(coroSuspensionBB);
-    Builder.CreateCall(coroEndFn, { coroHdl, falseVal });
-    Builder.CreateRet(coroHdl);
-    // ----------------------------------------------------------------------------------------------------------------
-    
+  // Inserting the necessay intrinsic function calls into the coroutine creation block
+  Builder.SetInsertPoint(coroCreationBB);
+  Value *coroId = Builder.CreateCall(coroIDFn, { zeroVal, null8PtrVal, null8PtrVal, null8PtrVal }, "id");
+  Value *coroSizeCall = Builder.CreateCall(coroSizeFn, {}, "size");
 
-    // Lest we forget, we should cleanup before we return from a function using coroutine.
-    // ----------------------------------------------------------------------------------------------------------------
-    // Getting the llvm.coro.free intrinsic function
-    Function *coroFreeFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_free);
-    
-    // Creating the cleanup block
-    BasicBlock *coroCleanupBB = BasicBlock::Create(TheContext, "coro.cleanup", TheFunction);
-    
-    // This block will delete the coroutine frame and branch to the suspend or return block
-    Builder.SetInsertPoint(coroCleanupBB);
-    Value *coroFreeCall = Builder.CreateCall(coroFreeFn, { coroId, coroHdl }, "mem");
-    CallInst::CreateFree(coroFreeCall, coroCleanupBB);
-    Builder.CreateBr(coroSuspensionBB);
-    // ----------------------------------------------------------------------------------------------------------------
+  Type* IntPtrTy = IntegerType::getInt32Ty(TheContext);
+  Type* Int8Ty = IntegerType::getInt8Ty(TheContext);
+  Constant* allocsize = ConstantExpr::getSizeOf(Int8Ty);
+  allocsize = ConstantExpr::getTruncOrBitCast(allocsize, IntPtrTy);
+  Value *coroAlloc = CallInst::CreateMalloc(coroCreationBB, IntPtrTy, Int8Ty, allocsize, coroSizeCall, nullptr, "alloc");
+  coroCreationBB->getInstList().push_back(cast<Instruction>(coroAlloc));
+  Value *coroHdl = Builder.CreateCall(coroBeginFn, { coroId, coroAlloc }, "hdl");
+
+  // We then link the coroutine creation block to the previous entry block
+  Builder.CreateBr(&entryBlock);
+  // ----------------------------------------------------------------------------------------------------------------
 
 
-    // Last but definitely not least, we should insert the coroutine in the function's logic
-    // ----------------------------------------------------------------------------------------------------------------
-    // Getting the intrinsic functions we'll need
-    Function *coroSuspendFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_suspend);
-    Function *coroSaveFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_save);
-    
-    // Finally getting back to the original insert point
-    Builder.SetInsertPoint(originalEntryBB);
-    Value *coroSavePt = Builder.CreateCall(coroSaveFn, { coroHdl });
-    Value *coroSuspendCall = Builder.CreateCall(coroSuspendFn, { coroSavePt, falseVal });
-    SwitchInst *switchInst = Builder.CreateSwitch(coroSuspendCall, coroSuspensionBB, 2);
-    switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 0)), originalEntryBB);
-    switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 1)), coroCleanupBB);
-    // ----------------------------------------------------------------------------------------------------------------
-        
+  // The next step after handling the creation of the coroutine frame is handling the return of the function. 
+  // In this case as well, a new basic block will be created to handle it.
+  // ----------------------------------------------------------------------------------------------------------------
+  // Getting the llvm.coro.end intrinsic function
+  Function *coroEndFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_end);
 
-    // TODO: What to return?
-    return Constant::getNullValue(Type::getDoubleTy(TheContext));
+  // Creating the suspension or return block
+  BasicBlock *coroSuspensionBB = BasicBlock::Create(TheContext, "coro.suspend_or_ret", TheFunction);
+
+  // This block will simply return control back to the caller
+  Builder.SetInsertPoint(coroSuspensionBB);
+  Builder.CreateCall(coroEndFn, { coroHdl, falseVal });
+  Builder.CreateRet(coroHdl);
+  // ----------------------------------------------------------------------------------------------------------------
+
+
+  // Lest we forget, we should cleanup before we return from a function using coroutine.
+  // ----------------------------------------------------------------------------------------------------------------
+  // Getting the llvm.coro.free intrinsic function
+  Function *coroFreeFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_free);
+
+  // Creating the cleanup block
+  BasicBlock *coroCleanupBB = BasicBlock::Create(TheContext, "coro.cleanup", TheFunction);
+
+  // This block will delete the coroutine frame and branch to the suspend or return block
+  Builder.SetInsertPoint(coroCleanupBB);
+  Value *coroFreeCall = Builder.CreateCall(coroFreeFn, { coroId, coroHdl }, "mem");
+  CallInst::CreateFree(coroFreeCall, coroCleanupBB);
+  Builder.CreateBr(coroSuspensionBB);
+  // ----------------------------------------------------------------------------------------------------------------
+
+
+  // Last but definitely not least, we should insert the coroutine in the function's logic
+  // ----------------------------------------------------------------------------------------------------------------
+  // Getting the intrinsic functions we'll need
+  Function *coroSuspendFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_suspend);
+  Function *coroSaveFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_save);
+
+  // Finally getting back to the original insert point
+  Builder.SetInsertPoint(originalEntryBB);
+  Value *coroSavePt = Builder.CreateCall(coroSaveFn, { coroHdl });
+  Value *coroSuspendCall = Builder.CreateCall(coroSuspendFn, { coroSavePt, falseVal });
+  // ----------------------------------------------------------------------------------------------------------------
+
+  auto coroSuccess = FunctionCoros.emplace(F, CoroutineFrameInfo{ coroSuspendCall, coroSuspensionBB, coroCleanupBB });
+  assert(coroSuccess.second);
+  return (*coroSuccess.first).second;
 }
 
 Function *PrototypeAST::codegen() {
