@@ -104,13 +104,15 @@ struct DebugInfo {
 } KSDbgInfo;
 
 struct CoroutineFrameInfo {
+    Value *handle;
     Value *suspensionPt;
     BasicBlock *suspensionBB;
     BasicBlock *cleanupBB;
 
     CoroutineFrameInfo() = delete;
     CoroutineFrameInfo(Value *suspendPt, BasicBlock *suspendBB, BasicBlock *cleanBB) 
-        : suspensionPt{ suspendPt }, suspensionBB{ suspendBB }, cleanupBB{ cleanBB } { }
+        : handle{ nullptr }, suspensionPt { suspendPt }, 
+        suspensionBB{ suspendBB }, cleanupBB{ cleanBB } { }
 };
 
 struct SourceLocation {
@@ -1038,14 +1040,26 @@ Value *CallExprAST::codegen() {
   if (CalleeF->arg_size() != Args.size())
     return LogErrorV("Incorrect # arguments passed");
 
-  std::vector<Value *> ArgsV;
-  for (unsigned i = 0, e = Args.size(); i != e; ++i) {
-    ArgsV.push_back(Args[i]->codegen());
-    if (!ArgsV.back())
-      return nullptr;
+  // If the function is a coroutine that has already been called, we'll resume it using its handle
+  const auto foundCoroutine = FunctionCoros.find(CalleeF);
+  if (foundCoroutine->first && foundCoroutine->second.handle != nullptr) {
+    Function *coroResumeFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_resume);
+    return Builder.CreateCall(coroResumeFn, { foundCoroutine->second.handle }, "corocalltmp");
   }
+  else {
+    std::vector<Value *> ArgsV;
+    for (unsigned i = 0, e = Args.size(); i != e; ++i) {
+        ArgsV.push_back(Args[i]->codegen());
+        if (!ArgsV.back())
+            return nullptr;
+    }
 
-  return Builder.CreateCall(CalleeF, ArgsV, "calltmp");
+    Value *callInst = Builder.CreateCall(CalleeF, ArgsV, "calltmp");;
+    if (foundCoroutine->first)
+      foundCoroutine->second.handle = callInst;
+
+    return callInst;
+  }
 }
 
 Value *IfExprAST::codegen() {
