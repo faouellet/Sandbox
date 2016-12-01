@@ -1,7 +1,13 @@
 extern putchard(char);
 
+def binary : 1 (x y) 0;  # Low-precedence operator that ignores operands.
+
 def hello()
-  yield 72;		# ascii 72  = 'H'
+  yield 72 :	# ascii 72  = 'H'
+  yield 72 :	# ascii 101 = 'e'
+  yield 72 :	# ascii 108 = 'l'
+  yield 72 :	# ascii 108 = 'l'
+  yield 72;		# ascii 111 = 'o'
 
 for i = 0, i < 5, 1.0 in
   putchard(hello())
