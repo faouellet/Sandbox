@@ -1042,7 +1042,7 @@ Value *CallExprAST::codegen() {
 
   // If the function is a coroutine that has already been called, we'll resume it using its handle
   const auto foundCoroutine = FunctionCoros.find(CalleeF);
-  if (foundCoroutine->first && foundCoroutine->second.handle != nullptr) {
+  if (foundCoroutine != FunctionCoros.end() && foundCoroutine->second.handle != nullptr) {
     Function *coroResumeFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_resume);
     return Builder.CreateCall(coroResumeFn, { foundCoroutine->second.handle }, "corocalltmp");
   }
@@ -1055,7 +1055,7 @@ Value *CallExprAST::codegen() {
     }
 
     Value *callInst = Builder.CreateCall(CalleeF, ArgsV, "calltmp");;
-    if (foundCoroutine->first)
+    if (foundCoroutine != FunctionCoros.end())
       foundCoroutine->second.handle = callInst;
 
     return callInst;
@@ -1281,8 +1281,7 @@ Value *YieldExprAST::codegen() {
   switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 0)), resumeBB);
   switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 1)), coroInfo.cleanupBB);
 
-  // TODO: What to return?
-  return Constant::getNullValue(Type::getDoubleTy(TheContext));
+  return nullptr;
 }
 
 const CoroutineFrameInfo& YieldExprAST::getOrCreateCoroutineFrame(Function *F) {
@@ -1464,17 +1463,21 @@ Function *FunctionAST::codegen() {
 
   KSDbgInfo.emitLocation(Body.get());
 
-  if (Value *RetVal = Body->codegen()) {
-    // Finish off the function.
-    Builder.CreateRet(RetVal);
+  Value *RetVal = Body->codegen();
 
-    // Pop off the lexical block for the function.
-    KSDbgInfo.LexicalBlocks.pop_back();
+  if (RetVal != nullptr) {
+      // Finish off the function.
+      Builder.CreateRet(RetVal);
+  }
 
-    // Validate the generated code, checking for consistency.
-    verifyFunction(*TheFunction);
+  if (RetVal != nullptr || FunctionCoros.find(TheFunction) != FunctionCoros.end()) {
+      // Pop off the lexical block for the function.
+      KSDbgInfo.LexicalBlocks.pop_back();
 
-    return TheFunction;
+      // Validate the generated code, checking for consistency.
+      verifyFunction(*TheFunction);
+
+      return TheFunction;
   }
 
   // Error reading body, remove function.
