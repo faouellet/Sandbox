@@ -105,13 +105,14 @@ struct DebugInfo {
 
 struct CoroutineFrameInfo {
     Value *handle;
+    Value *promise;
     Value *suspensionPt;
     BasicBlock *suspensionBB;
     BasicBlock *cleanupBB;
 
     CoroutineFrameInfo() = delete;
-    CoroutineFrameInfo(Value *suspendPt, BasicBlock *suspendBB, BasicBlock *cleanBB) 
-        : handle{ nullptr }, suspensionPt { suspendPt }, 
+    CoroutineFrameInfo(Value *pv, Value *suspendPt, BasicBlock *suspendBB, BasicBlock *cleanBB) 
+        : handle{ nullptr }, promise{ pv }, suspensionPt{ suspendPt },
         suspensionBB{ suspendBB }, cleanupBB{ cleanBB } { }
 };
 
@@ -1269,14 +1270,21 @@ Value *VarExprAST::codegen() {
 }
 
 Value *YieldExprAST::codegen() {
+  // Generate the basic blocks needed for a coroutine
   const CoroutineFrameInfo& coroInfo = getOrCreateCoroutineFrame(Builder.GetInsertBlock()->getParent());
   
   // At this point, one of three things can happen:
   // 1 - The coroutine is suspended and we hand back the control to the caller
   // 2 - The coroutine is resumed and we jump to the resume basic block
-  // 3 - The coroutine is destroyed and we go clean up its coroutine frame
-  BasicBlock *resumeBB = BasicBlock::Create(TheContext, "coro.resume");
-  
+  // 3 - The coroutine is done and we go clean up its coroutine frame
+  BasicBlock *resumeBB = BasicBlock::Create(TheContext, "coro.resume", Builder.GetInsertBlock()->getParent());
+
+  // Filling the resume block with the expression to be yielded
+  Builder.SetInsertPoint(resumeBB);
+  Value *exprVal = Expr->codegen();
+  Builder.CreateStore(exprVal, coroInfo.promise);
+
+  // Finally, we have a choice to make, 
   SwitchInst *switchInst = Builder.CreateSwitch(coroInfo.suspensionPt, coroInfo.suspensionBB, 2);
   switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 0)), resumeBB);
   switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 1)), coroInfo.cleanupBB);
@@ -1290,7 +1298,7 @@ const CoroutineFrameInfo& YieldExprAST::getOrCreateCoroutineFrame(Function *F) {
   if (fnCoro != FunctionCoros.end())
       return fnCoro->second;
 
-  // We'll keep the current insert point in memory because we're about to make a long detour
+  // We'll keep the current insert point in memory because we're about to make a long detour back to it
   BasicBlock *originalEntryBB = Builder.GetInsertBlock();
 
   // Some types we'll be using when getting the coroutine intrinsic function declarations
@@ -1316,9 +1324,13 @@ const CoroutineFrameInfo& YieldExprAST::getOrCreateCoroutineFrame(Function *F) {
   BasicBlock &entryBlock = TheFunction->getEntryBlock();
   BasicBlock *coroCreationBB = BasicBlock::Create(TheContext, "coro.creation", TheFunction, &entryBlock);
 
+  // We'll also define a promise to communicate with the caller
+  Value *promise = Builder.CreateAlloca(Type::getDoubleTy(TheContext), nullptr, "promise");
+  Value *pv = Builder.CreateBitCast(promise, int8PtrTy, "pv");
+
   // Inserting the necessay intrinsic function calls into the coroutine creation block
   Builder.SetInsertPoint(coroCreationBB);
-  Value *coroId = Builder.CreateCall(coroIDFn, { zeroVal, null8PtrVal, null8PtrVal, null8PtrVal }, "id");
+  Value *coroId = Builder.CreateCall(coroIDFn, { zeroVal, pv, null8PtrVal, null8PtrVal }, "id");
   Value *coroSizeCall = Builder.CreateCall(coroSizeFn, {}, "size");
 
   Type* IntPtrTy = IntegerType::getInt32Ty(TheContext);
@@ -1332,7 +1344,6 @@ const CoroutineFrameInfo& YieldExprAST::getOrCreateCoroutineFrame(Function *F) {
   // We then link the coroutine creation block to the previous entry block
   Builder.CreateBr(&entryBlock);
   // ----------------------------------------------------------------------------------------------------------------
-
 
   // The next step after handling the creation of the coroutine frame is handling the return of the function. 
   // In this case as well, a new basic block will be created to handle it.
@@ -1378,7 +1389,7 @@ const CoroutineFrameInfo& YieldExprAST::getOrCreateCoroutineFrame(Function *F) {
   Value *coroSuspendCall = Builder.CreateCall(coroSuspendFn, { coroSavePt, falseVal });
   // ----------------------------------------------------------------------------------------------------------------
 
-  auto coroSuccess = FunctionCoros.emplace(F, CoroutineFrameInfo{ coroSuspendCall, coroSuspensionBB, coroCleanupBB });
+  auto coroSuccess = FunctionCoros.emplace(F, CoroutineFrameInfo{ promise, coroSuspendCall, coroSuspensionBB, coroCleanupBB });
   assert(coroSuccess.second);
   return (*coroSuccess.first).second;
 }
