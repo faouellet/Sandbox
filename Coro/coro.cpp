@@ -109,11 +109,12 @@ struct CoroutineFrameInfo {
     Value *suspensionPt;
     BasicBlock *suspensionBB;
     BasicBlock *cleanupBB;
+    BasicBlock *resumeBB;
 
     CoroutineFrameInfo() = delete;
-    CoroutineFrameInfo(Value *pv, Value *suspendPt, BasicBlock *suspendBB, BasicBlock *cleanBB) 
+    CoroutineFrameInfo(Value *pv, Value *suspendPt, BasicBlock *suspendBB, BasicBlock *cleanBB, BasicBlock *resumeBB) 
         : handle{ nullptr }, promise{ pv }, suspensionPt{ suspendPt },
-        suspensionBB{ suspendBB }, cleanupBB{ cleanBB } { }
+        suspensionBB{ suspendBB }, cleanupBB{ cleanBB }, resumeBB{ resumeBB } { }
 };
 
 struct SourceLocation {
@@ -662,10 +663,14 @@ static std::unique_ptr<ExprAST> ParseVarExpr() {
   return llvm::make_unique<VarExprAST>(std::move(VarNames), std::move(Body));
 }
 
-/// yieldexpr ::= 'yield' expr
+/// yieldexpr ::= 'yield' parenexpr
 static std::unique_ptr<ExprAST> ParseYieldExpr() {
   SourceLocation LitLoc = CurLoc;
-  getNextToken(); // eat the yield
+  
+  getNextToken(); // eat the '('
+
+  if (CurTok != '(')
+    return LogError("Expected '('");
 
   auto Expr = ParseExpression();
   if (!Expr)
@@ -1272,23 +1277,15 @@ Value *VarExprAST::codegen() {
 Value *YieldExprAST::codegen() {
   // Generate the basic blocks needed for a coroutine
   const CoroutineFrameInfo& coroInfo = getOrCreateCoroutineFrame(Builder.GetInsertBlock()->getParent());
-  
-  // At this point, one of three things can happen:
-  // 1 - The coroutine is suspended and we hand back the control to the caller
-  // 2 - The coroutine is resumed and we jump to the resume basic block
-  // 3 - The coroutine is done and we go clean up its coroutine frame
-  BasicBlock *resumeBB = BasicBlock::Create(TheContext, "coro.resume", Builder.GetInsertBlock()->getParent());
 
-  // Filling the resume block with the expression to be yielded
-  Builder.SetInsertPoint(resumeBB);
+  // Filling the entry block with the expression to be yielded
+  Builder.SetInsertPoint(&Builder.GetInsertBlock()->front());
   Value *exprVal = Expr->codegen();
   Builder.CreateStore(exprVal, coroInfo.promise);
 
-  // Finally, we have a choice to make, 
-  SwitchInst *switchInst = Builder.CreateSwitch(coroInfo.suspensionPt, coroInfo.suspensionBB, 2);
-  switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 0)), resumeBB);
-  switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 1)), coroInfo.cleanupBB);
-
+  // From this point on, new instructions will go in the resume basic block
+  Builder.SetInsertPoint(coroInfo.resumeBB);
+ 
   return nullptr;
 }
 
@@ -1324,12 +1321,13 @@ const CoroutineFrameInfo& YieldExprAST::getOrCreateCoroutineFrame(Function *F) {
   BasicBlock &entryBlock = TheFunction->getEntryBlock();
   BasicBlock *coroCreationBB = BasicBlock::Create(TheContext, "coro.creation", TheFunction, &entryBlock);
 
+  Builder.SetInsertPoint(coroCreationBB);
+  
   // We'll also define a promise to communicate with the caller
   Value *promise = Builder.CreateAlloca(Type::getDoubleTy(TheContext), nullptr, "promise");
   Value *pv = Builder.CreateBitCast(promise, int8PtrTy, "pv");
-
+  
   // Inserting the necessay intrinsic function calls into the coroutine creation block
-  Builder.SetInsertPoint(coroCreationBB);
   Value *coroId = Builder.CreateCall(coroIDFn, { zeroVal, pv, null8PtrVal, null8PtrVal }, "id");
   Value *coroSizeCall = Builder.CreateCall(coroSizeFn, {}, "size");
 
@@ -1387,9 +1385,20 @@ const CoroutineFrameInfo& YieldExprAST::getOrCreateCoroutineFrame(Function *F) {
   Builder.SetInsertPoint(originalEntryBB);
   Value *coroSavePt = Builder.CreateCall(coroSaveFn, { coroHdl });
   Value *coroSuspendCall = Builder.CreateCall(coroSuspendFn, { coroSavePt, falseVal });
+
+  // Adding a resume block in case it is neeeded
+  BasicBlock *resumeBB = BasicBlock::Create(TheContext, "coro.resume", Builder.GetInsertBlock()->getParent());
+
+  // At this point, one of three things can happen:
+  // 1 - The coroutine is suspended and we hand back the control to the caller
+  // 2 - The coroutine is resumed and we jump to the resume basic block
+  // 3 - The coroutine is done and we go clean up its coroutine frame
+  SwitchInst *switchInst = Builder.CreateSwitch(coroSuspendCall, coroSuspensionBB, 2);
+  switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 0)), resumeBB);
+  switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 1)), coroCleanupBB);
   // ----------------------------------------------------------------------------------------------------------------
 
-  auto coroSuccess = FunctionCoros.emplace(F, CoroutineFrameInfo{ promise, coroSuspendCall, coroSuspensionBB, coroCleanupBB });
+  auto coroSuccess = FunctionCoros.emplace(F, CoroutineFrameInfo{ promise, coroSuspendCall, coroSuspensionBB, coroCleanupBB, resumeBB });
   assert(coroSuccess.second);
   return (*coroSuccess.first).second;
 }
