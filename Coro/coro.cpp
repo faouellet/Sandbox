@@ -110,12 +110,11 @@ class CoroutineCreator {
       Value *suspensionPt;
       BasicBlock *suspensionBB;
       BasicBlock *cleanupBB;
-      BasicBlock *resumeBB;
 
       CoroutineFrameInfo() = delete;
-      CoroutineFrameInfo(Value *pv, Value *suspendPt, BasicBlock *suspendBB, BasicBlock *cleanBB, BasicBlock *resumeBB)
+      CoroutineFrameInfo(Value *pv, Value *suspendPt, BasicBlock *suspendBB, BasicBlock *cleanBB)
           : handle{ nullptr }, promise{ pv }, suspensionPt{ suspendPt },
-          suspensionBB{ suspendBB }, cleanupBB{ cleanBB }, resumeBB{ resumeBB } { }
+          suspensionBB{ suspendBB }, cleanupBB{ cleanBB } { }
   };
 
   std::map<Function *, CoroutineFrameInfo> FunctionCoros;
@@ -125,6 +124,7 @@ public:
     Value *getHandle(Function *F) const;
     Value *getPromise(Function *F) const;
     bool isCoroutine(Function *F) const;
+    BasicBlock *setupResumeBlock(Function *F);
 
 } CoroCreator;
 
@@ -1060,21 +1060,32 @@ void CoroutineCreator::setupCoroutineFrame(Function *F) {
   Value *coroSavePt = Builder.CreateCall(coroSaveFn, { coroHdl });
   Value *coroSuspendCall = Builder.CreateCall(coroSuspendFn, { coroSavePt, falseVal });
 
-  // Adding a resume block in case it is neeeded
-  BasicBlock *resumeBB = BasicBlock::Create(TheContext, "coro.resume", Builder.GetInsertBlock()->getParent());
-
-  // At this point, one of three things can happen:
-  // 1 - The coroutine is suspended and we hand back the control to the caller
-  // 2 - The coroutine is resumed and we jump to the resume basic block
-  // 3 - The coroutine is done and we go clean up its coroutine frame
-  SwitchInst *switchInst = Builder.CreateSwitch(coroSuspendCall, coroSuspensionBB, 2);
-  switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 0)), resumeBB);
-  switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 1)), coroCleanupBB);
+  Builder.CreateBr(coroCleanupBB);
   // ----------------------------------------------------------------------------------------------------------------
 
-  auto coroSuccess = FunctionCoros.emplace(F, CoroutineFrameInfo{ promise, coroSuspendCall, coroSuspensionBB, coroCleanupBB, resumeBB });
+  auto coroSuccess = FunctionCoros.emplace(F, CoroutineFrameInfo{ promise, coroSuspendCall, coroSuspensionBB, coroCleanupBB });
   assert(coroSuccess.second);   // Sanity check
   return;
+}
+
+BasicBlock *CoroutineCreator::setupResumeBlock(Function *F) {
+  auto coroFrameIt = FunctionCoros.find(F);
+  if (coroFrameIt == FunctionCoros.end())
+    return nullptr;
+
+  CoroutineFrameInfo& coroInfo = coroFrameIt->second;
+
+  // Adding a resume block
+  BasicBlock *resumeBB = BasicBlock::Create(TheContext, "coro.resume", Builder.GetInsertBlock()->getParent());
+
+  // Now that we have a resume block, we need to change the unconditional branch from the suspension block
+  // to the cleanup block into a conditional one
+  Builder.SetInsertPoint(coroInfo.suspensionBB);
+  SwitchInst *switchInst = Builder.CreateSwitch(coroInfo.suspensionPt, coroInfo.suspensionBB, 2);
+  switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 0)), resumeBB);
+  switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 1)), coroInfo.cleanupBB);
+
+  return resumeBB;
 }
 
 Value *CoroutineCreator::getHandle(Function *F) const {
