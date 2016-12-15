@@ -1091,7 +1091,7 @@ BasicBlock *CoroutineCreator::setupResumeBlock(Function *F) {
 Value *CoroutineCreator::getHandle(Function *F) const {
   auto coroFrameIt = FunctionCoros.find(F);
   if (coroFrameIt != FunctionCoros.end())
-      coroFrameIt->second.handle;
+      return coroFrameIt->second.handle;
 
   return nullptr;
 }
@@ -1099,7 +1099,7 @@ Value *CoroutineCreator::getHandle(Function *F) const {
 Value *CoroutineCreator::getPromise(Function *F) const {
   auto coroFrameIt = FunctionCoros.find(F);
   if (coroFrameIt != FunctionCoros.end())
-      coroFrameIt->second.promise;
+      return coroFrameIt->second.promise;
 
   return nullptr;
 }
