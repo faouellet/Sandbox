@@ -1044,7 +1044,8 @@ void CoroutineCreator::setupCoroutineFrame(Function *F) {
   // This block will delete the coroutine frame and branch to the suspend or return block
   Builder.SetInsertPoint(coroCleanupBB);
   Value *coroFreeCall = Builder.CreateCall(coroFreeFn, { coroId, coroHdl }, "mem");
-  CallInst::CreateFree(coroFreeCall, coroCleanupBB);
+  Value *coroFree = CallInst::CreateFree(coroFreeCall, coroCleanupBB);
+  coroCleanupBB->getInstList().push_back(cast<Instruction>(coroFree));
   Builder.CreateBr(coroSuspensionBB);
   // ----------------------------------------------------------------------------------------------------------------
 
