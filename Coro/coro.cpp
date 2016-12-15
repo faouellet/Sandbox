@@ -1442,8 +1442,7 @@ Value *YieldExprAST::codegen() {
   Value *exprVal = Expr->codegen();
   Builder.CreateStore(exprVal, CoroCreator.getPromise(F));
  
-  // Since we need to return something to keep the changes minimal...
-  return Constant::getNullValue(Type::getDoubleTy(TheContext));;
+  return nullptr;
 }
 
 Function *PrototypeAST::codegen() {
@@ -1526,17 +1525,21 @@ Function *FunctionAST::codegen() {
 
   KSDbgInfo.emitLocation(Body.get());
 
-  if (Value *RetVal = Body->codegen()) {
-      // Finish off the function.
-      Builder.CreateRet(RetVal);
+  Value *RetVal = Body->codegen();
 
-      // Pop off the lexical block for the function.
-      KSDbgInfo.LexicalBlocks.pop_back();
+  if (RetVal != nullptr) {
+    // Finish off the function.
+    Builder.CreateRet(RetVal);
+  }
+  
+  if (RetVal != nullptr || CoroCreator.isCoroutine(TheFunction)) {
+    // Pop off the lexical block for the function.
+    KSDbgInfo.LexicalBlocks.pop_back();
 
-      // Validate the generated code, checking for consistency.
-      verifyFunction(*TheFunction);
+    // Validate the generated code, checking for consistency.
+    verifyFunction(*TheFunction);
 
-      return TheFunction;
+    return TheFunction;
   }
 
   // Error reading body, remove function.
