@@ -9,6 +9,7 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include <cctype>
 #include <cstdio>
 #include <map>
@@ -1206,12 +1207,15 @@ Value *CallExprAST::codegen() {
     return LogErrorV("Incorrect # arguments passed");
 
   // If the function is a coroutine that has already been called, we'll resume it using its handle
-  //const auto foundCoroutine = FunctionCoros.find(CalleeF);
-  //if (foundCoroutine != FunctionCoros.end() && foundCoroutine->second.handle != nullptr) {
-  //  Function *coroResumeFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_resume);
-  //  return Builder.CreateCall(coroResumeFn, { foundCoroutine->second.handle }, "corocalltmp");
-  //}
-  //else {
+  const bool isCoroutine = CoroCreator.isCoroutine(CalleeF);
+  const Value *handle = CoroCreator.getHandle(CalleeF);
+  if (isCoroutine && handle != nullptr) {
+    Function *coroResumeFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_resume);
+    Value *callInst = Builder.CreateCall(coroResumeFn, { CoroCreator.getHandle(CalleeF) }, "corocalltmp");;
+    handle = callInst;
+    return callInst;
+  }
+  else {
     std::vector<Value *> ArgsV;
     for (unsigned i = 0, e = Args.size(); i != e; ++i) {
         ArgsV.push_back(Args[i]->codegen());
@@ -1219,12 +1223,8 @@ Value *CallExprAST::codegen() {
             return nullptr;
     }
 
-    Value *callInst = Builder.CreateCall(CalleeF, ArgsV, "calltmp");;
-    //if (foundCoroutine != FunctionCoros.end())
-    //  foundCoroutine->second.handle = callInst;
-
-    return callInst;
-  //}
+    return Builder.CreateCall(CalleeF, ArgsV, "calltmp");;
+  }
 }
 
 Value *IfExprAST::codegen() {
@@ -1443,7 +1443,7 @@ Value *YieldExprAST::codegen() {
   Value *exprVal = Expr->codegen();
   Builder.CreateStore(exprVal, CoroCreator.getPromise(F));
  
-  return nullptr;
+  return exprVal;
 }
 
 Function *PrototypeAST::codegen() {
@@ -1528,14 +1528,42 @@ Function *FunctionAST::codegen() {
 
   Value *RetVal = Body->codegen();
 
-  if (RetVal != nullptr) {
-    // Finish off the function.
-    Builder.CreateRet(RetVal);
-  }
-  
-  if (RetVal != nullptr || CoroCreator.isCoroutine(TheFunction)) {
+  if (Value *RetVal = Body->codegen()) {
+    const bool isCoroutine = CoroCreator.isCoroutine(TheFunction);
+
+    if (!isCoroutine) {
+      // Finish off the function.
+      Builder.CreateRet(RetVal);
+    }
+    
     // Pop off the lexical block for the function.
     KSDbgInfo.LexicalBlocks.pop_back();
+
+    // In the case of a coroutine, we have to change the function prototype so that it
+    // returns a handle to a coroutine instead of the value computed by the function's body
+    if (isCoroutine) {
+      // Make the function type:  i8 *(double,double) etc.
+      std::vector<Type *> Doubles(TheFunction->arg_size(), Type::getDoubleTy(TheContext));
+      FunctionType *NFTy = FunctionType::get(Type::getInt8PtrTy(TheContext), Doubles, false);
+
+      // Create a new function and transfer the content of the old one in it
+      Function *NF = Function::Create(NFTy, TheFunction->getLinkage());
+      NF->copyAttributesFrom(TheFunction);
+      NF->setComdat(TheFunction->getComdat());
+      NF->setAttributes(TheFunction->getAttributes());
+      TheFunction->getParent()->getFunctionList().insert(TheFunction->getIterator(), NF);
+      NF->takeName(TheFunction);
+      NF->getBasicBlockList().splice(NF->begin(), TheFunction->getBasicBlockList());
+
+      // Patch the pointer to LLVM function in debug info descriptor.
+      NF->setSubprogram(TheFunction->getSubprogram());
+
+      // Flush the old function
+      TheFunction->eraseFromParent();
+      
+      FunctionProtos[Proto->getName()] = std::move(Proto);
+      Function *TheFunction = getFunction(P.getName());
+    }
 
     // Validate the generated code, checking for consistency.
     verifyFunction(*TheFunction);
