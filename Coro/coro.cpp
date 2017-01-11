@@ -119,13 +119,16 @@ class CoroutineCreator {
   };
 
   std::map<Function *, CoroutineFrameInfo> FunctionCoros;
+  std::map<std::string, Value *> CoroHandles;
 
 public:
     void setupCoroutineFrame(Function *F);
-    Value *getHandle(Function *F) const;
+    Value *getHandle(const std::string &VarName) const;
+    void setHandle(const std::string &VarName, Value *Handle);
     Value *getPromise(Function *F) const;
     bool isCoroutine(Function *F) const;
     BasicBlock *setupResumeBlock(Function *F);
+    void replaceFunction(Function *OldFunc, Function *NewFunc);
 
 } CoroCreator;
 
@@ -953,11 +956,12 @@ Function *getFunction(std::string Name) {
 /// CreateEntryBlockAlloca - Create an alloca instruction in the entry block of
 /// the function.  This is used for mutable variables etc.
 static AllocaInst *CreateEntryBlockAlloca(Function *TheFunction,
-                                          const std::string &VarName) {
+                                          const std::string &VarName,
+                                          llvm::Type *VarType = nullptr) {
   IRBuilder<> TmpB(&TheFunction->getEntryBlock(),
                    TheFunction->getEntryBlock().begin());
-  return TmpB.CreateAlloca(Type::getDoubleTy(TheContext), nullptr,
-                           VarName.c_str());
+  return TmpB.CreateAlloca(VarType == nullptr ? Type::getDoubleTy(TheContext) : VarType, 
+                           nullptr, VarName.c_str());
 }
 
 //===----------------------------------------------------------------------===//
@@ -969,7 +973,7 @@ void CoroutineCreator::setupCoroutineFrame(Function *F) {
   auto fnCoro = FunctionCoros.find(F);
   if (fnCoro != FunctionCoros.end())
       return;
-
+  
   // We'll keep the current insert point in memory because we're about to make a long detour back to it
   BasicBlock *originalEntryBB = Builder.GetInsertBlock();
 
@@ -1090,13 +1094,18 @@ BasicBlock *CoroutineCreator::setupResumeBlock(Function *F) {
   return resumeBB;
 }
 
-Value *CoroutineCreator::getHandle(Function *F) const {
-  auto coroFrameIt = FunctionCoros.find(F);
-  if (coroFrameIt != FunctionCoros.end())
-      return coroFrameIt->second.handle;
+Value *CoroutineCreator::getHandle(const std::string &VarName) const {
+  auto coroFrameIt = CoroHandles.find(VarName);
+  if (coroFrameIt != CoroHandles.end())
+      return coroFrameIt->second;
 
   return nullptr;
 }
+
+void CoroutineCreator::setHandle(const std::string &VarName, Value *Handle) {
+    CoroHandles[VarName] = Handle;
+}
+
 
 Value *CoroutineCreator::getPromise(Function *F) const {
   auto coroFrameIt = FunctionCoros.find(F);
@@ -1108,6 +1117,14 @@ Value *CoroutineCreator::getPromise(Function *F) const {
 
 bool CoroutineCreator::isCoroutine(Function *F) const {
   return FunctionCoros.find(F) != FunctionCoros.end();
+}
+
+void CoroutineCreator::replaceFunction(Function *OldFunc, Function *NewFunc) {
+  auto funcIt = FunctionCoros.find(OldFunc);
+  if (funcIt != FunctionCoros.end()) {
+    FunctionCoros.emplace(NewFunc, funcIt->second);
+    FunctionCoros.erase(funcIt);
+  }
 }
 
 Value *NumberExprAST::codegen() {
@@ -1199,32 +1216,35 @@ Value *CallExprAST::codegen() {
 
   // Look up the name in the global module table.
   Function *CalleeF = getFunction(Callee);
-  if (!CalleeF)
+
+  // Look if the name is instead a handle to a coroutine
+  Value *handle = CoroCreator.getHandle(Callee);
+
+  // If it is neither, we have a problem
+  if (!CalleeF && handle == nullptr)
     return LogErrorV("Unknown function referenced");
+
+  // If the function is a coroutine and we already called it once, we'll resume it with its handle 
+  if (handle != nullptr) {
+    Function *coroResumeFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_resume);
+    Value *callInst = Builder.CreateCall(coroResumeFn, { handle });
+    handle = callInst;
+    return callInst;
+  }
 
   // If argument mismatch error.
   if (CalleeF->arg_size() != Args.size())
     return LogErrorV("Incorrect # arguments passed");
 
-  // If the function is a coroutine that has already been called, we'll resume it using its handle
-  const bool isCoroutine = CoroCreator.isCoroutine(CalleeF);
-  const Value *handle = CoroCreator.getHandle(CalleeF);
-  if (isCoroutine && handle != nullptr) {
-    Function *coroResumeFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_resume);
-    Value *callInst = Builder.CreateCall(coroResumeFn, { CoroCreator.getHandle(CalleeF) }, "corocalltmp");;
-    handle = callInst;
-    return callInst;
+  
+  std::vector<Value *> ArgsV;
+  for (unsigned i = 0, e = Args.size(); i != e; ++i) {
+      ArgsV.push_back(Args[i]->codegen());
+      if (!ArgsV.back())
+          return nullptr;
   }
-  else {
-    std::vector<Value *> ArgsV;
-    for (unsigned i = 0, e = Args.size(); i != e; ++i) {
-        ArgsV.push_back(Args[i]->codegen());
-        if (!ArgsV.back())
-            return nullptr;
-    }
 
-    return Builder.CreateCall(CalleeF, ArgsV, "calltmp");;
-  }
+  return Builder.CreateCall(CalleeF, ArgsV, "calltmp");;
 }
 
 Value *IfExprAST::codegen() {
@@ -1407,8 +1427,12 @@ Value *VarExprAST::codegen() {
       InitVal = ConstantFP::get(TheContext, APFloat(0.0));
     }
 
-    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName);
+    AllocaInst *Alloca = CreateEntryBlockAlloca(TheFunction, VarName, InitVal->getType());
     Builder.CreateStore(InitVal, Alloca);
+
+    // If the value type is not a double then it must be a handle to a coroutine
+    if (InitVal->getType() == Type::getInt8PtrTy(TheContext))
+        CoroCreator.setHandle(VarName, InitVal);
 
     // Remember the old variable binding so that we can restore the binding when
     // we unrecurse.
@@ -1526,8 +1550,6 @@ Function *FunctionAST::codegen() {
 
   KSDbgInfo.emitLocation(Body.get());
 
-  Value *RetVal = Body->codegen();
-
   if (Value *RetVal = Body->codegen()) {
     const bool isCoroutine = CoroCreator.isCoroutine(TheFunction);
 
@@ -1559,10 +1581,12 @@ Function *FunctionAST::codegen() {
       NF->setSubprogram(TheFunction->getSubprogram());
 
       // Flush the old function
+      CoroCreator.replaceFunction(TheFunction, NF);
       TheFunction->eraseFromParent();
+      TheFunction = NF;
       
-      FunctionProtos[Proto->getName()] = std::move(Proto);
-      Function *TheFunction = getFunction(P.getName());
+      //FunctionProtos[Proto->getName()] = std::move(Proto);
+      //Function *TheFunction = getFunction(P.getName());
     }
 
     // Validate the generated code, checking for consistency.
