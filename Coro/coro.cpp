@@ -1006,17 +1006,29 @@ void CoroutineCreator::setupCoroutineFrame(Function *F) {
   Value *promise = Builder.CreateAlloca(Type::getDoubleTy(TheContext), nullptr, "promise");
   Value *pv = Builder.CreateBitCast(promise, int8PtrTy, "pv");
 
-  // Inserting the necessay intrinsic function calls into the coroutine creation block
+  // Handing out an ID for the coroutine frame
   Value *coroId = Builder.CreateCall(coroIDFn, { zeroVal, pv, null8PtrVal, null8PtrVal }, "id");
+  
+  // Allocating memory for the coroutine frame
   Value *coroSizeCall = Builder.CreateCall(coroSizeFn, {}, "size");
-
   Type* IntPtrTy = IntegerType::getInt32Ty(TheContext);
   Type* Int8Ty = IntegerType::getInt8Ty(TheContext);
   Constant* allocsize = ConstantExpr::getSizeOf(Int8Ty);
   allocsize = ConstantExpr::getTruncOrBitCast(allocsize, IntPtrTy);
   Value *coroAlloc = CallInst::CreateMalloc(coroCreationBB, IntPtrTy, Int8Ty, allocsize, coroSizeCall, nullptr, "alloc");
   coroCreationBB->getInstList().push_back(cast<Instruction>(coroAlloc));
+
+  // Getting the address to the coroutine frame
   Value *coroHdl = Builder.CreateCall(coroBeginFn, { coroId, coroAlloc }, "hdl");
+
+  // Since we decided that the semantics of coroutines at Kaleidoscope level will be to always 
+  // call the coroutine to get a handle and then invoking the coroutine through this handle, 
+  // it is necessary to insert a suspension point here before any real work is done by the coroutine.
+  Function *coroSaveFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_save);
+  Function *coroSuspendFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_suspend);
+
+  Value *coroEntrySavePt = Builder.CreateCall(coroSaveFn, { coroHdl });
+  Builder.CreateCall(coroSuspendFn, { coroEntrySavePt, falseVal });
 
   // We then link the coroutine creation block to the previous entry block
   Builder.CreateBr(&entryBlock);
@@ -1057,10 +1069,6 @@ void CoroutineCreator::setupCoroutineFrame(Function *F) {
 
   // Last but definitely not least, we should insert the coroutine in the function's logic
   // ----------------------------------------------------------------------------------------------------------------
-  // Getting the intrinsic functions we'll need
-  Function *coroSuspendFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_suspend);
-  Function *coroSaveFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_save);
-
   // Finally getting back to the original insert point
   Builder.SetInsertPoint(originalEntryBB);
   Value *coroSavePt = Builder.CreateCall(coroSaveFn, { coroHdl });
@@ -1224,11 +1232,12 @@ Value *CallExprAST::codegen() {
   if (!CalleeF && handle == nullptr)
     return LogErrorV("Unknown function referenced");
 
-  // If the function is a coroutine and we already called it once, we'll resume it with its handle 
   if (handle != nullptr) {
+    // If the function is a coroutine and we already called it once, we'll resume it with its handle 
     Function *coroResumeFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_resume);
     Value *callInst = Builder.CreateCall(coroResumeFn, { handle });
     handle = callInst;
+
     return callInst;
   }
 
@@ -1244,6 +1253,7 @@ Value *CallExprAST::codegen() {
           return nullptr;
   }
 
+  TheModule->dump();
   return Builder.CreateCall(CalleeF, ArgsV, "calltmp");;
 }
 
