@@ -106,7 +106,6 @@ struct DebugInfo {
 
 class CoroutineCreator {
   struct CoroutineFrameInfo {
-      Value *handle;
       Value *promise;
       Value *suspensionPt;
       BasicBlock *suspensionBB;
@@ -114,7 +113,7 @@ class CoroutineCreator {
 
       CoroutineFrameInfo() = delete;
       CoroutineFrameInfo(Value *pv, Value *suspendPt, BasicBlock *suspendBB, BasicBlock *cleanBB)
-          : handle{ nullptr }, promise{ pv }, suspensionPt{ suspendPt },
+          : promise{ pv }, suspensionPt{ suspendPt },
           suspensionBB{ suspendBB }, cleanupBB{ cleanBB } { }
   };
 
@@ -1441,8 +1440,9 @@ Value *VarExprAST::codegen() {
     Builder.CreateStore(InitVal, Alloca);
 
     // If the value type is not a double then it must be a handle to a coroutine
-    if (InitVal->getType() == Type::getInt8PtrTy(TheContext))
+    if (InitVal->getType() == Type::getInt8PtrTy(TheContext)) {
         CoroCreator.setHandle(VarName, InitVal);
+    }
 
     // Remember the old variable binding so that we can restore the binding when
     // we unrecurse.
