@@ -1142,7 +1142,7 @@ void CoroutineCreator::setupPromiseAddrAccess(const std::string &VarName) {
   coroPromiseFnArgs.push_back(ConstantInt::get(Type::getInt1Ty(TheContext), APInt(1, 0)));
 
   Value *coroPromiseAddrRaw = Builder.CreateCall(coroPromiseFn, coroPromiseFnArgs, "promise.addr.raw");
-  Value *coroPromiseAddr = Builder.CreateBitCast(coroPromiseAddrRaw, Type::getInt32PtrTy(TheContext), "promise.addr");
+  Value *coroPromiseAddr = Builder.CreateBitCast(coroPromiseAddrRaw, Type::getDoublePtrTy(TheContext), "promise.addr");
 
   PromiseAddrs[VarName] = coroPromiseAddr;
 }
@@ -1262,7 +1262,10 @@ Value *CallExprAST::codegen() {
     Value *callInst = Builder.CreateCall(coroResumeFn, { handle });
     handle = callInst;
 
-    return callInst;
+    // To get the value yielded by the coroutine, we have to fetch it through its promise
+    Value *coroVal = Builder.CreateLoad(CoroCreator.getPromiseAddr(Callee), "coro.val");
+
+    return coroVal;
   }
 
   // If argument mismatch error.
@@ -1277,8 +1280,7 @@ Value *CallExprAST::codegen() {
           return nullptr;
   }
 
-  TheModule->dump();
-  return Builder.CreateCall(CalleeF, ArgsV, "calltmp");;
+  return Builder.CreateCall(CalleeF, ArgsV, "calltmp");
 }
 
 Value *IfExprAST::codegen() {
