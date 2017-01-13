@@ -119,12 +119,15 @@ class CoroutineCreator {
 
   std::map<Function *, CoroutineFrameInfo> FunctionCoros;
   std::map<std::string, Value *> CoroHandles;
+  std::map<std::string, Value *> PromiseAddrs;
 
 public:
     void setupCoroutineFrame(Function *F);
     Value *getHandle(const std::string &VarName) const;
     void setHandle(const std::string &VarName, Value *Handle);
     Value *getPromise(Function *F) const;
+    Value *getPromiseAddr(const std::string &VarName) const;
+    void setupPromiseAddrAccess(const std::string &VarName);
     bool isCoroutine(Function *F) const;
     BasicBlock *setupResumeBlock(Function *F);
     void replaceFunction(Function *OldFunc, Function *NewFunc);
@@ -1122,6 +1125,28 @@ Value *CoroutineCreator::getPromise(Function *F) const {
   return nullptr;
 }
 
+Value *CoroutineCreator::getPromiseAddr(const std::string &VarName) const {
+  auto promiseAddrIt = PromiseAddrs.find(VarName);
+  if (promiseAddrIt != PromiseAddrs.end())
+      return promiseAddrIt->second;
+
+  return nullptr;
+}
+
+void CoroutineCreator::setupPromiseAddrAccess(const std::string &VarName) {
+  Function *coroPromiseFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_promise);
+
+  std::vector<Value *> coroPromiseFnArgs;
+  coroPromiseFnArgs.push_back(getHandle(VarName));
+  coroPromiseFnArgs.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), APInt(32, 4)));
+  coroPromiseFnArgs.push_back(ConstantInt::get(Type::getInt1Ty(TheContext), APInt(1, 0)));
+
+  Value *coroPromiseAddrRaw = Builder.CreateCall(coroPromiseFn, coroPromiseFnArgs, "promise.addr.raw");
+  Value *coroPromiseAddr = Builder.CreateBitCast(coroPromiseAddrRaw, Type::getInt32PtrTy(TheContext), "promise.addr");
+
+  PromiseAddrs[VarName] = coroPromiseAddr;
+}
+
 bool CoroutineCreator::isCoroutine(Function *F) const {
   return FunctionCoros.find(F) != FunctionCoros.end();
 }
@@ -1442,6 +1467,7 @@ Value *VarExprAST::codegen() {
     // If the value type is not a double then it must be a handle to a coroutine
     if (InitVal->getType() == Type::getInt8PtrTy(TheContext)) {
         CoroCreator.setHandle(VarName, InitVal);
+        CoroCreator.setupPromiseAddrAccess(VarName);
     }
 
     // Remember the old variable binding so that we can restore the binding when
