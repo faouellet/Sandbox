@@ -932,6 +932,7 @@ static DISubroutineType *CreateFunctionType(unsigned NumArgs, DIFile *Unit) {
 
 static std::unique_ptr<Module> TheModule;
 static std::map<std::string, AllocaInst *> NamedValues;
+static std::vector<Value *> CoroHandlesInCurrentFunction;
 static std::unique_ptr<KaleidoscopeJIT> TheJIT;
 static std::map<std::string, std::unique_ptr<PrototypeAST>> FunctionProtos;
 
@@ -1470,6 +1471,7 @@ Value *VarExprAST::codegen() {
     if (InitVal->getType() == Type::getInt8PtrTy(TheContext)) {
         CoroCreator.setHandle(VarName, InitVal);
         CoroCreator.setupPromiseAddrAccess(VarName);
+        CoroHandlesInCurrentFunction.push_back(InitVal);
     }
 
     // Remember the old variable binding so that we can restore the binding when
@@ -1565,6 +1567,10 @@ Function *FunctionAST::codegen() {
 
   // Record the function arguments in the NamedValues map.
   NamedValues.clear();
+
+  // Keep track of the coroutine handles in CoroHandlesInCurrentFunction
+  CoroHandlesInCurrentFunction.clear();
+
   unsigned ArgIdx = 0;
   for (auto &Arg : TheFunction->args()) {
     // Create an alloca for this variable.
@@ -1592,6 +1598,10 @@ Function *FunctionAST::codegen() {
     const bool isCoroutine = CoroCreator.isCoroutine(TheFunction);
 
     if (!isCoroutine) {
+      // Destroy any coroutine that might have been spawned
+      Function *coroDestroyFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_destroy);
+      for (const auto& handle : CoroHandlesInCurrentFunction)
+        Builder.CreateCall(coroDestroyFn, { handle });
       // Finish off the function.
       Builder.CreateRet(RetVal);
     }
@@ -1622,9 +1632,6 @@ Function *FunctionAST::codegen() {
       CoroCreator.replaceFunction(TheFunction, NF);
       TheFunction->eraseFromParent();
       TheFunction = NF;
-      
-      //FunctionProtos[Proto->getName()] = std::move(Proto);
-      //Function *TheFunction = getFunction(P.getName());
     }
 
     // Validate the generated code, checking for consistency.
