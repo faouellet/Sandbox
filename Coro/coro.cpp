@@ -108,12 +108,13 @@ class CoroutineCreator {
   struct CoroutineFrameInfo {
       Value *promise;
       Value *suspensionPt;
+      Value *coroAddr;
       BasicBlock *suspensionBB;
       BasicBlock *cleanupBB;
 
       CoroutineFrameInfo() = delete;
-      CoroutineFrameInfo(Value *pv, Value *suspendPt, BasicBlock *suspendBB, BasicBlock *cleanBB)
-          : promise{ pv }, suspensionPt{ suspendPt },
+      CoroutineFrameInfo(Value *pv, Value *suspendPt, Value *coroAddress, BasicBlock *suspendBB, BasicBlock *cleanBB)
+          : promise{ pv }, suspensionPt{ suspendPt }, coroAddr{ coroAddress },
           suspensionBB{ suspendBB }, cleanupBB{ cleanBB } { }
   };
 
@@ -123,6 +124,7 @@ class CoroutineCreator {
 
 public:
     void setupCoroutineFrame(Function *F);
+    Value *getCoroutineAddr(Function *F) const;
     Value *getHandle(const std::string &VarName) const;
     void setHandle(const std::string &VarName, Value *Handle);
     Value *getPromise(Function *F) const;
@@ -1074,13 +1076,10 @@ void CoroutineCreator::setupCoroutineFrame(Function *F) {
   // ----------------------------------------------------------------------------------------------------------------
   // Finally getting back to the original insert point
   Builder.SetInsertPoint(originalEntryBB);
-  Value *coroSavePt = Builder.CreateCall(coroSaveFn, { coroHdl });
-  Value *coroSuspendCall = Builder.CreateCall(coroSuspendFn, { coroSavePt, falseVal });
-
   Builder.CreateBr(coroCleanupBB);
   // ----------------------------------------------------------------------------------------------------------------
 
-  auto coroSuccess = FunctionCoros.emplace(F, CoroutineFrameInfo{ promise, coroSuspendCall, coroSuspensionBB, coroCleanupBB });
+  auto coroSuccess = FunctionCoros.emplace(F, CoroutineFrameInfo{ promise, nullptr, coroHdl, coroSuspensionBB, coroCleanupBB });
   assert(coroSuccess.second);   // Sanity check
   return;
 }
@@ -1103,6 +1102,14 @@ BasicBlock *CoroutineCreator::setupResumeBlock(Function *F) {
   switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 1)), coroInfo.cleanupBB);
 
   return resumeBB;
+}
+
+Value *CoroutineCreator::getCoroutineAddr(Function *F) const {
+  auto coroFrameIt = FunctionCoros.find(F);
+  if (coroFrameIt != FunctionCoros.end())
+      return coroFrameIt->second.coroAddr;
+
+  return nullptr;
 }
 
 Value *CoroutineCreator::getHandle(const std::string &VarName) const {
@@ -1501,12 +1508,18 @@ Value *YieldExprAST::codegen() {
   // Generate the basic blocks needed for a coroutine
   Function *F = Builder.GetInsertBlock()->getParent();
   CoroCreator.setupCoroutineFrame(F);
-
+  
   // Filling the entry block with the expression to be yielded
   Builder.SetInsertPoint(&Builder.GetInsertBlock()->front());
   Value *exprVal = Expr->codegen();
   Builder.CreateStore(exprVal, CoroCreator.getPromise(F));
  
+  Function *coroSaveFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_save);
+  Function *coroSuspendFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_suspend);
+
+  Value *coroSavePt = Builder.CreateCall(coroSaveFn, { CoroCreator.getCoroutineAddr(F) });
+  Value *coroSuspendCall = Builder.CreateCall(coroSuspendFn, { coroSavePt, ConstantInt::get(Type::getInt1Ty(TheContext), APInt(1, 0)) });
+
   return exprVal;
 }
 
