@@ -113,8 +113,8 @@ class CoroutineCreator {
       BasicBlock *cleanupBB;
 
       CoroutineFrameInfo() = delete;
-      CoroutineFrameInfo(Value *pv, Value *suspendPt, Value *coroAddress, BasicBlock *suspendBB, BasicBlock *cleanBB)
-          : promise{ pv }, suspensionPt{ suspendPt }, coroAddr{ coroAddress },
+      CoroutineFrameInfo(Value *pv, Value *coroAddress, BasicBlock *suspendBB, BasicBlock *cleanBB)
+          : promise{ pv }, coroAddr{ coroAddress },
           suspensionBB{ suspendBB }, cleanupBB{ cleanBB } { }
   };
 
@@ -129,6 +129,7 @@ public:
     void setHandle(const std::string &VarName, Value *Handle);
     Value *getPromise(Function *F) const;
     Value *getPromiseAddr(const std::string &VarName) const;
+    void setSuspenionPt(Function *F, Value *suspendPt);
     void setupPromiseAddrAccess(const std::string &VarName);
     bool isCoroutine(Function *F) const;
     BasicBlock *setupResumeBlock(Function *F);
@@ -1022,7 +1023,7 @@ void CoroutineCreator::setupCoroutineFrame(Function *F) {
   allocsize = ConstantExpr::getTruncOrBitCast(allocsize, IntPtrTy);
   Value *coroAlloc = CallInst::CreateMalloc(coroCreationBB, IntPtrTy, Int8Ty, allocsize, coroSizeCall, nullptr, "alloc");
   coroCreationBB->getInstList().push_back(cast<Instruction>(coroAlloc));
-
+  
   // Getting the address to the coroutine frame
   Value *coroHdl = Builder.CreateCall(coroBeginFn, { coroId, coroAlloc }, "hdl");
 
@@ -1076,10 +1077,10 @@ void CoroutineCreator::setupCoroutineFrame(Function *F) {
   // ----------------------------------------------------------------------------------------------------------------
   // Finally getting back to the original insert point
   Builder.SetInsertPoint(originalEntryBB);
-  Builder.CreateBr(coroCleanupBB);
+  //Builder.CreateBr(coroCleanupBB);
   // ----------------------------------------------------------------------------------------------------------------
 
-  auto coroSuccess = FunctionCoros.emplace(F, CoroutineFrameInfo{ promise, nullptr, coroHdl, coroSuspensionBB, coroCleanupBB });
+  auto coroSuccess = FunctionCoros.emplace(F, CoroutineFrameInfo{ promise, coroHdl, coroSuspensionBB, coroCleanupBB });
   assert(coroSuccess.second);   // Sanity check
   return;
 }
@@ -1093,10 +1094,15 @@ BasicBlock *CoroutineCreator::setupResumeBlock(Function *F) {
 
   // Adding a resume block
   BasicBlock *resumeBB = BasicBlock::Create(TheContext, "coro.resume", Builder.GetInsertBlock()->getParent());
+  BranchInst *brInst = BranchInst::Create(coroInfo.cleanupBB);
+  resumeBB->getInstList().push_back(brInst);
 
   // Now that we have a resume block, we need to change the unconditional branch from the suspension block
   // to the cleanup block into a conditional one
-  Builder.SetInsertPoint(coroInfo.suspensionBB);
+  BasicBlock *entryBB = Builder.GetInsertBlock();
+  if (llvm::isa<BranchInst>(&(entryBB->getInstList().front())))
+      entryBB->getInstList().pop_front();
+
   SwitchInst *switchInst = Builder.CreateSwitch(coroInfo.suspensionPt, coroInfo.suspensionBB, 2);
   switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 0)), resumeBB);
   switchInst->addCase(ConstantInt::get(TheContext, APInt(32, 1)), coroInfo.cleanupBB);
@@ -1140,6 +1146,13 @@ Value *CoroutineCreator::getPromiseAddr(const std::string &VarName) const {
 
   return nullptr;
 }
+
+void CoroutineCreator::setSuspenionPt(Function *F, Value *suspendPt) {
+  auto coroFrameIt = FunctionCoros.find(F);
+  if (coroFrameIt != FunctionCoros.end())
+      coroFrameIt->second.suspensionPt = suspendPt;
+}
+
 
 void CoroutineCreator::setupPromiseAddrAccess(const std::string &VarName) {
   Function *coroPromiseFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_promise);
@@ -1510,7 +1523,7 @@ Value *YieldExprAST::codegen() {
   CoroCreator.setupCoroutineFrame(F);
   
   // Filling the entry block with the expression to be yielded
-  Builder.SetInsertPoint(&Builder.GetInsertBlock()->front());
+  Builder.SetInsertPoint(Builder.GetInsertBlock());
   Value *exprVal = Expr->codegen();
   Builder.CreateStore(exprVal, CoroCreator.getPromise(F));
  
@@ -1520,6 +1533,10 @@ Value *YieldExprAST::codegen() {
   Value *coroSavePt = Builder.CreateCall(coroSaveFn, { CoroCreator.getCoroutineAddr(F) });
   Value *coroSuspendCall = Builder.CreateCall(coroSuspendFn, { coroSavePt, ConstantInt::get(Type::getInt1Ty(TheContext), APInt(1, 0)) });
 
+  CoroCreator.setSuspenionPt(F, coroSuspendCall);
+
+  Builder.SetInsertPoint(CoroCreator.setupResumeBlock(F));
+  
   return exprVal;
 }
 
