@@ -123,18 +123,26 @@ class CoroutineCreator {
   std::map<std::string, Value *> PromiseAddrs;
 
 public:
+    void branchToCleanup(Function *F) const;
+
     void setupCoroutineFrame(Function *F);
+
     Value *getCoroutineAddr(Function *F) const;
+
     Value *getHandle(const std::string &VarName) const;
     void setHandle(const std::string &VarName, Value *Handle);
+
     Value *getPromise(Function *F) const;
     Value *getPromiseAddr(const std::string &VarName) const;
-    void setSuspenionPt(Function *F, Value *suspendPt);
     void setupPromiseAddrAccess(const std::string &VarName);
-    bool isCoroutine(Function *F) const;
-    BasicBlock *setupResumeBlock(Function *F);
-    void replaceFunction(Function *OldFunc, Function *NewFunc);
 
+    void setSuspenionPt(Function *F, Value *suspendPt);  
+    
+    bool isCoroutine(Function *F) const;
+    
+    BasicBlock *setupResumeBlock(Function *F);
+    
+    void replaceFunction(Function *OldFunc, Function *NewFunc);
 } CoroCreator;
 
 struct SourceLocation {
@@ -1110,6 +1118,13 @@ BasicBlock *CoroutineCreator::setupResumeBlock(Function *F) {
   return resumeBB;
 }
 
+void CoroutineCreator::branchToCleanup(Function *F) const {
+  auto coroFrameIt = FunctionCoros.find(F);
+  if (coroFrameIt != FunctionCoros.end())
+      Builder.CreateBr(coroFrameIt->second.cleanupBB);
+  
+}
+
 Value *CoroutineCreator::getCoroutineAddr(Function *F) const {
   auto coroFrameIt = FunctionCoros.find(F);
   if (coroFrameIt != FunctionCoros.end())
@@ -1627,7 +1642,15 @@ Function *FunctionAST::codegen() {
   if (Value *RetVal = Body->codegen()) {
     const bool isCoroutine = CoroCreator.isCoroutine(TheFunction);
 
-    if (!isCoroutine) {
+    if (isCoroutine) {
+      // With the way coroutine IR generation is done, we can end up with an empty exit block.
+      // If that's the case, we fill it with an unconditional branch to the coroutine cleanup block
+      BasicBlock *exitBB = Builder.GetInsertBlock();
+      if (exitBB->empty()) {
+        CoroCreator.branchToCleanup(TheFunction);
+      }
+
+    } else {
       // Destroy any coroutine that might have been spawned
       Function *coroDestroyFn = Intrinsic::getDeclaration(TheModule.get(), Intrinsic::coro_destroy);
       for (const auto& handle : CoroHandlesInCurrentFunction)
