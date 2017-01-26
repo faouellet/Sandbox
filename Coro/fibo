@@ -1,8 +1,0 @@
-extern putchard(char);
-
-def fib()
-  var a = 0, b = 1 in
-  
-
-for i = 0, i < 5, 1.0 in
-  putchard(fib())
