@@ -21,7 +21,7 @@ public:
         mHead->SuccNodes.resize(mMaxHeight, mTail);
     }
 
-    void Delete(KeyT key)
+    void Delete(const KeyT& key)
     {
         NodePtr foundNode;
         NodePtrList update(mMaxHeight);
@@ -44,7 +44,7 @@ public:
         }
     }
 
-    void Insert(KeyT key, ValueT val)
+    void Insert(const KeyT& key, ValueT val)
     {
         NodePtr foundNode;
         NodePtrList update(mMaxHeight);
@@ -73,7 +73,7 @@ public:
         }
     }
 
-    bool Search(KeyT searchKey, ValueT& val)
+    bool Search(const KeyT& searchKey, ValueT& val)
     {
         NodePtr foundNode;
         if (Search(searchKey, foundNode, nullptr))
@@ -99,7 +99,7 @@ private:
         return level;
     }
 
-    bool Search(KeyT searchKey, NodePtr& foundNode, NodePtrList* nodesToUpdate)
+    bool Search(const KeyT& searchKey, NodePtr& foundNode, NodePtrList* nodesToUpdate)
     {
         NodePtr currNode = mHead;
 
