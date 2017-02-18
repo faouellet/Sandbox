@@ -1,6 +1,8 @@
 #include <atomic>
 #include <iostream>
 #include <memory>
+#include <thread>
+#include <vector>
 
 template <class ValueT>
 class List
@@ -76,6 +78,10 @@ private:
     }
 
 private:
+    template <class T>
+    friend std::ostream& operator<<(std::ostream& stream, const List<T>& list);
+
+private:
     struct Node
     {
         ValueT Value;
@@ -91,16 +97,40 @@ private:
     NodePtr mTail;
 };
 
+template <class ValueT>
+std::ostream& operator<<(std::ostream& stream, const List<ValueT>& list)
+{
+    std::cout << "Head, ";
+
+    List<ValueT>::NodePtr currNode = list.mHead;
+    while ((currNode != nullptr) && (currNode != list.mTail))
+    {
+        currNode = currNode->Next;
+        if (currNode != list.mTail)
+        {
+            std::cout << currNode->Value << ", ";
+        }
+    }
+
+    std::cout << "Tail\n";
+
+    return stream;
+}
+
 int main()
 {
     // Sanity tests with a single thread
     List<int> l;
+    std::cout << l;
     l.Insert(9);
+    std::cout << l;
     l.Search(9);
+    std::cout << l;
     l.Delete(9);
+    std::cout << l;
 
     // Multithreaded tests
 
+
     std::cout << "Hello\n";
-}
 }
