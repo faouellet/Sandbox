@@ -10,14 +10,20 @@ class List
     using NodePtr = std::shared_ptr<Node>;
 
 public:
+    List()
+    {
+        mTail = std::make_shared<Node>();
+        mHead = std::make_shared<Node>( ValueT{}, mTail );
+    }
+
     void Delete(const ValueT& val)
     {
         NodePtr beforeNodeToDelete = SearchBeforeNode(val);
         NodePtr nodeToDelete = beforeNodeToDelete->Next;
         while ((nodeToDelete != nullptr) && 
-            std::atomic_compare_exchange_strong(&(beforeNodeToDelete->Next),
-                                                &(nodeToDelete), 
-                                                nodeToDelete->Next));
+            !std::atomic_compare_exchange_strong(&(beforeNodeToDelete->Next),
+                                                 &(nodeToDelete), 
+                                                 nodeToDelete->Next));
     }
 
     void Insert(const ValueT& val)
@@ -29,7 +35,7 @@ public:
 
         newNode->Next = afterNode;
 
-        while (std::atomic_compare_exchange_strong(&(beforeNode->Next), &(newNode->Next), newNode))
+        while (!std::atomic_compare_exchange_strong(&(beforeNode->Next), &(newNode->Next), newNode))
         {
             afterNode = beforeNode->Next;
             ValueT currNextNodeVal = afterNode->Value;
@@ -76,7 +82,8 @@ private:
         NodePtr Next;
 
         Node() = default;
-        Node(const ValueT& val) : ValueT{ val }, Next{ nullptr } { }
+        Node(const ValueT& val) : Value{ val }, Next{ nullptr } { }
+        Node(const ValueT& val, const NodePtr& next) : Value{ val }, Next{ next } { }
     };
 
 private:
@@ -95,4 +102,5 @@ int main()
     // Multithreaded tests
 
     std::cout << "Hello\n";
+}
 }
