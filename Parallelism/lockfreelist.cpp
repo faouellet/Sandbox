@@ -1,6 +1,7 @@
 #include <atomic>
 #include <iostream>
 #include <memory>
+#include <random>
 #include <thread>
 #include <vector>
 
@@ -22,7 +23,7 @@ public:
     {
         NodePtr beforeNodeToDelete = SearchBeforeNode(val);
         NodePtr nodeToDelete = beforeNodeToDelete->Next;
-        while ((nodeToDelete != nullptr) && 
+        while ((nodeToDelete != nullptr) && (nodeToDelete != mTail) &&
             !std::atomic_compare_exchange_strong(&(beforeNodeToDelete->Next),
                                                  &(nodeToDelete), 
                                                  nodeToDelete->Next));
@@ -129,8 +130,36 @@ int main()
     l.Delete(9);
     std::cout << l;
 
+    std::mt19937 generator({});
+    std::bernoulli_distribution dist(0.5);
+
     // Multithreaded tests
+    std::vector<std::thread> workers;
+    for (int iWorker = 0; iWorker < 2; ++iWorker)
+    {
+        workers.emplace_back([&]() 
+        {
+            for (int iTask = 0; iTask < 100; ++iTask)
+            {
+                if (dist(generator))
+                {
+                    l.Insert(iTask);
+                }
+                else
+                {
+                    l.Delete(iTask);
+                }
+            }
+        });
+    }
 
+    for (auto& w : workers)
+    {
+        if (w.joinable())
+        {
+            w.join();
+        }
+    }
 
-    std::cout << "Hello\n";
+    std::cout << l;
 }
