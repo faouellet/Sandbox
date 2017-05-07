@@ -2,7 +2,6 @@
 #include <boost/graph/connected_components.hpp>
 #include <boost/graph/labeled_graph.hpp>
 
-#include <cassert>
 #include <chrono>
 #include <iostream>
 #include <mutex>
