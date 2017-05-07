@@ -32,13 +32,13 @@ public:
 public:
     void AddNode(const ThreadID& tid) 
     {
-        std::lock_guard<std::mutex>{mMutex};
+        std::lock_guard<std::mutex> lg{mMutex};
         boost::add_vertex(tid, mGraph);
     }
 
     void AddEdge(const ThreadID& fromTID, const ThreadID& toTID)
     {
-        std::lock_guard<std::mutex>{mMutex};
+        std::lock_guard<std::mutex> lg{mMutex};
 
         boost::add_edge_by_label(fromTID, toTID, mGraph);
 
