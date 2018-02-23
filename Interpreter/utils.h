@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <iostream>
 #include <random>
 #include <vector>
 
@@ -38,7 +39,7 @@ void ComputeMeanExecTime(TFunc&& func, const Program& program)
     for(int i = 0; i < 100; ++i)
     {
         const auto start = std::chrono::system_clock::now();
-        /*result = */callable(program);
+        /*result = */func(program);
         const auto elapsed = std::chrono::system_clock::now() - start;
         total += elapsed;
     }
