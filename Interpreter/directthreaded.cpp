@@ -69,6 +69,6 @@ END:
 
 int main()
 {
-    ComputeMeanExecTime(DirectThreadedInterpret, GenerateProgram());
+    DirectThreadedInterpret(GenerateProgram());
     return 0;
 }
