@@ -1,7 +1,6 @@
 #include "utils.h"
 
 #include <cassert>
-#include <iostream>
 
 long IndirectThreadedInterpret(const std::vector<unsigned char>& program)
 {

@@ -2,7 +2,6 @@
 
 #include <cassert>
 #include <functional>
-#include <iostream>
 
 long IndirectSwitchInterpret(const std::vector<unsigned char>& program)
 {

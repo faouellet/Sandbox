@@ -2,7 +2,6 @@
 
 #include <cassert>
 #include <functional>
-#include <iostream>
 
 long LoopInterpret(const std::vector<unsigned char>& program)
 {

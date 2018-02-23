@@ -1,7 +1,6 @@
 #include "utils.h"
 
 #include <cassert>
-#include <iostream>
 
 long DirectSwitchInterpret(const std::vector<unsigned char>& program)
 {
