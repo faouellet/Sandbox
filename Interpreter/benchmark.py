@@ -4,8 +4,6 @@ from subprocess import Popen, PIPE
 from matplotlib.ticker import FuncFormatter
 import matplotlib.pyplot as plt
 
-import pdb
-
 result_re = re.compile("Mean elapsed time: (?P<time>[0-9]+)")
 
 cpp_files = [f for f in os.listdir(os.getcwd()) if f.endswith(".cpp")]
@@ -26,6 +24,8 @@ for p in programs:
 
     match = result_re.match(output)
     results[p] = match.group("time")
+
+print results
 
 results_range = range(len(results))
 
