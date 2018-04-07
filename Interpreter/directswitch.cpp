@@ -5,7 +5,7 @@
 long DirectSwitchInterpret(const std::vector<unsigned char>& program)
 {
     long value{};
-    int pc{};
+    size_t pc{};
     const size_t programSize = program.size();
 
     while(pc < programSize)

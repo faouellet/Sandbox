@@ -14,8 +14,9 @@ long DirectThreadedInterpret(const std::vector<unsigned char>& program)
         bytecode.push_back(&program[i + 1]);
     }
 
+    const int nbReps = 100;
     std::chrono::nanoseconds total{};
-    for(int i = 0; i < 100; ++i)
+    for(int i = 0; i < nbReps; ++i)
     {
         const auto start = std::chrono::system_clock::now();
         
@@ -61,7 +62,7 @@ END:
     total += elapsed;
     }
 
-    std::cout << "Mean elapsed time: " << std::chrono::duration_cast<std::chrono::milliseconds>(total / 30).count() << std::endl;
+    std::cout << "Mean elapsed time: " << std::chrono::duration_cast<std::chrono::milliseconds>(total / nbReps).count() << std::endl;
     
     return 0;
 }
