@@ -1,0 +1,3 @@
+[submodule "Database/nanodbc"]
+	path = Database/nanodbc
+	url = https://github.com/nanodbc/nanodbc.git
